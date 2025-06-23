@@ -5975,4 +5975,471 @@ private:
 
 static int sampleGUITest = RegisterSample( "9:16", "GUITest", GUITest::Create );
 
+class CageSensorDuplication : public Sample
+{
+public:
+	//---------------------------------------------------------------
+	// Types
+	//---------------------------------------------------------------
+	enum ShapeType
+	{
+		e_circleShape = 0,
+		e_capsuleShape,
+		e_boxShape,
+		e_polygon3,
+		e_polygon4,
+		e_polygon5,
+		e_polygon6,
+		e_polygon7,
+		e_polygon8,
+	};
 
+	struct ShapeConfig
+	{
+		ShapeType type;
+		uint32_t color;
+	};
+
+	struct b2ShapeIdHash
+	{
+		size_t operator()( const b2ShapeId& id ) const noexcept
+		{
+			return std::hash<uint64_t>()( b2StoreShapeId( id ) );
+		}
+	};
+	struct b2ShapeIdEqual
+	{
+		bool operator()( const b2ShapeId& a, const b2ShapeId& b ) const noexcept
+		{
+			return B2_ID_EQUALS( a, b );
+		}
+	};
+
+	using TouchSet = std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual>;
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new CageSensorDuplication( context );
+	}
+
+	static constexpr uint32_t kDefaultColors[2] = { 0xE53F3F, 0x3F6FE5 };
+
+	//---------------------------------------------------------------
+	// Construction
+	//---------------------------------------------------------------
+	explicit CageSensorDuplication( SampleContext* context )
+		: Sample( context )
+		, m_enableHitEvents( true )
+		, m_soundVolume( 50.0f )
+		, m_linearDamping( 0.5f )
+		, m_angularDamping( 0.2f )
+		, m_gravityScale( 0.0f )
+		, m_isBullet( false )
+		, m_gravity{ 0.0f, -10.0f }
+		, m_motionLocks{ false, false, false }
+		, m_angVelMin( -10.0f )
+		, m_angVelMax( 10.0f )
+		, m_speedMin( 4.5f )
+		, m_speedMax( 5.0f )
+	{
+		m_context->enableSleep = true;
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 20.0f;
+		}
+		b2World_SetGravity( m_worldId, m_gravity );
+		InitializeAudio();
+		CreateBodies();
+	}
+
+	//---------------------------------------------------------------
+	// Step
+	//---------------------------------------------------------------
+	void Step() override
+	{
+		Sample::Step();
+
+		b2SensorEvents events = b2World_GetSensorEvents( m_worldId );
+		const b2Vec2 spawnCenter{ 0.0f, 0.0f };
+
+		// --------------------------- BEGIN TOUCH -----------------------------
+		for ( int i = 0; i < events.beginCount; ++i )
+		{
+			const b2SensorBeginTouchEvent& e = events.beginEvents[i];
+
+			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
+				continue;
+			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
+				continue;
+
+			m_touchingSegments[e.visitorShapeId].insert( e.sensorShapeId );
+
+			uint32_t col = m_shapeColorMap[e.visitorShapeId];
+			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
+			mat.customColor = col;
+			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
+		}
+
+		// ---------------------------- END TOUCH ------------------------------
+		for ( int i = 0; i < events.endCount; ++i )
+		{
+			const b2SensorEndTouchEvent& e = events.endEvents[i];
+
+			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
+				continue;
+			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
+				continue;
+
+			auto& set = m_touchingSegments[e.visitorShapeId];
+			set.erase( e.sensorShapeId );
+
+			if ( set.empty() )
+			{
+				m_touchingSegments.erase( e.visitorShapeId );
+
+				if ( m_alreadyDuplicated.insert( e.visitorShapeId ).second )
+				{
+					int genLevel = m_generationLevel[e.visitorShapeId];
+					for ( int k = 0; k < 2; ++k )
+						CreateProjectile( spawnCenter, genLevel + 1 );
+
+					if ( m_enableHitEvents )
+						m_audioManager.PlaySpawnSound();
+				}
+			}
+
+			uint32_t baseCol = m_segmentOriginalColor[e.sensorShapeId];
+			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
+			mat.customColor = baseCol;
+			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
+		}
+
+		// --------------------- Effets sonores (impacts physiques) ---------------------
+		if ( m_enableHitEvents )
+		{
+			b2ContactEvents evts = b2World_GetContactEvents( m_worldId );
+			for ( int i = 0; i < evts.hitCount; ++i )
+				m_audioManager.HandleHitEffect( evts.hitEvents[i].point, evts.hitEvents[i].approachSpeed, m_stepCount );
+		}
+		m_audioManager.PlayQueued();
+		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
+	}
+
+	//---------------------------------------------------------------
+	// GUI
+	//---------------------------------------------------------------
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+
+		// === Fenêtre 1 : Contrôles ===
+		ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.15f, io.DisplaySize.y * 0.54f ), ImGuiCond_Always,
+								 ImVec2( 0.5f, 0.0f ) );
+		ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
+		ImGui::Begin( "BluePrint Settings" );
+
+		const char* shapeNames[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
+									 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
+		bool recreate = false;
+		
+		bool lockChanged = false;
+		lockChanged |= ImGui::Checkbox( "Lock X", &m_motionLocks.linearX );
+		ImGui::SameLine();
+		lockChanged |= ImGui::Checkbox( "Lock Y", &m_motionLocks.linearY );
+		ImGui::SameLine();
+		lockChanged |= ImGui::Checkbox( "Lock Rot", &m_motionLocks.angularZ );
+
+		if ( ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f" ) )
+			recreate = true;
+		if ( ImGui::SliderFloat( "Spacing", &m_spacing, 0.5f, 5.0f, "%.2f" ) )
+			recreate = true;
+
+		bool physChanged = false;
+		physChanged |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.5f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
+		physChanged |= ImGui::Checkbox( "Bullet", &m_isBullet );
+
+		physChanged |= ImGui::SliderFloat( "Min Speed", &m_speedMin, 0.0f, 30.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Max Speed", &m_speedMax, 0.0f, 30.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Min Ang Vel", &m_angVelMin, -50.0f, 0.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Max Ang Vel", &m_angVelMax, 0.0f, 50.0f, "%.2f" );
+
+		if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.0f%%" ) )
+			m_audioManager.SetVolume( m_soundVolume );
+		ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents );
+
+		ImGui::Separator();
+		bool cageChanged = false;
+		cageChanged |= ImGui::SliderInt( "Segments par cage", &m_cageSegments, 4, 128 );
+		cageChanged |= ImGui::SliderFloat( "Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f" );
+		cageChanged |= ImGui::SliderFloat( "Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
+		ImGui::End();
+
+		if ( recreate || lockChanged || physChanged || cageChanged )
+			CreateBodies();
+
+		// === Fenêtre 1 : Contrôles (inchangée) ===
+		ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.15f, io.DisplaySize.y * 0.54f ), ImGuiCond_Always,
+								 ImVec2( 0.5f, 0.0f ) );
+		ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
+		ImGui::Begin( "BluePrint Settings" );
+		ImGui::End();
+
+		// === HUD : TITRE seul, ombre douce + texte blanc (minimaliste pro) ===
+		{
+			ImFont* titleFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+			const char* title = "PROJECTILES";
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::PushFont( titleFont );
+			ImVec2 ts = ImGui::CalcTextSize( title );
+			ImGui::PopFont();
+
+			float padX = ts.x * 0.2f;
+			float padY = ts.y * 0.5f;
+			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
+
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.17f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+			ImGui::Begin( "##HUDTitleOmbre", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
+
+			// Ombre douce (décalage +1.5, alpha 80)
+			dl->AddText( titleFont, titleFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 80 ), title );
+			// Texte principal blanc légèrement adouci (alpha 230)
+			dl->AddText( titleFont, titleFont->FontSize, tp, IM_COL32( 255, 255, 255, 230 ), title );
+
+			ImGui::End();
+		}
+
+		// === HUD : COMPTEUR de projectiles (ombre douce + texte blanc) ===
+		{
+			ImFont* largeFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+			std::string countText = std::to_string( m_projectileCount );
+
+			ImGui::PushFont( largeFont ); // S’assurer que le calcul correspond à la police large
+			ImVec2 countSize = ImGui::CalcTextSize( countText.c_str() );
+			ImGui::PopFont();
+
+			// Padding confortable (plus généreux sur Y !)
+			const float padX = 40.0f;
+			const float padY = 25.0f;
+			ImVec2 winSize( countSize.x + padX * 2, countSize.y + padY * 2 );
+
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.22f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+									 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::Begin( "##HUDCountOmbre", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+
+			// Placement parfaitement centré
+			ImVec2 tp( wp.x + ( ws.x - countSize.x ) * 0.5f, wp.y + ( ws.y - countSize.y ) * 0.5f );
+
+			// Ombre douce (léger décalage)
+			dl->AddText( largeFont, largeFont->FontSize, ImVec2( tp.x + 2.0f, tp.y + 2.0f ), IM_COL32( 0, 0, 0, 100 ),
+						 countText.c_str() );
+			// Texte principal blanc doux
+			dl->AddText( largeFont, largeFont->FontSize, tp, IM_COL32( 255, 255, 255, 240 ), countText.c_str() );
+
+			ImGui::End();
+		}
+	}
+
+private:
+	// Audio
+	AudioManager m_audioManager;
+	float m_soundVolume;
+
+	// Physique
+	bool m_enableHitEvents;
+	b2MotionLocks m_motionLocks;
+	b2Vec2 m_gravity;
+	float m_linearDamping;
+	float m_angularDamping;
+	float m_gravityScale;
+	bool m_isBullet;
+	float m_restitution = 1.0f;
+	float m_friction = 0.0f;
+	float m_density = 1.0f;
+	float m_shapeSize = 1.0f;
+	float m_spacing = 1.0f;
+	// Nouvelles plages pour la vélocité
+	float m_speedMin = 5.0f, m_speedMax = 5.0f;
+	float m_angVelMin = -10.0f, m_angVelMax = 10.0f;
+
+	// Équipes
+	ShapeConfig m_shapes[2] = { { e_circleShape, 0xE53F3F }, { e_boxShape, 0x3F6FE5 } };
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_shapeColorMap;
+
+	// Cage
+	float m_cageThickness = 0.25f;
+	float m_cageMotorSpeed = 0.0f;
+	int m_cageSegments = 50;
+	std::vector<b2BodyId> m_cageBodies;
+	// compteur de projectiles
+	int m_projectileCount = 0;
+
+	// Projectiles
+	std::vector<b2BodyId> m_bodies;
+
+	// Segments → couleur d’origine
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_segmentOriginalColor;
+
+	// Gestion duplication/génération
+	std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual> m_alreadyDuplicated;
+	std::unordered_map<b2ShapeId, int, b2ShapeIdHash, b2ShapeIdEqual> m_generationLevel;
+
+	// Ensemble des segments actuellement touchés par chaque projectile
+	std::unordered_map<b2ShapeId, TouchSet, b2ShapeIdHash, b2ShapeIdEqual> m_touchingSegments;
+
+	// Audio init
+	void InitializeAudio()
+	{
+		std::filesystem::path p = "data/audio/Ticks";
+		if ( !std::filesystem::exists( p ) )
+			p = "D:/Sound & Fx/audio/Ticks";
+		m_audioManager.LoadFromDirectory( p.string() );
+		m_audioManager.SetVolume( m_soundVolume );
+	}
+
+	// Centralise la création d’un projectile (utilisé partout)
+	void CreateProjectile( const b2Vec2& pos, int genLevel )
+	{
+		float speed = RandomFloatRange( m_speedMin, m_speedMax );
+		float angle = RandomFloatRange( -b2_pi, b2_pi );
+
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = pos;
+		bd.linearVelocity = { speed * std::cos( angle ), speed * std::sin( angle ) };
+		bd.angularVelocity = RandomFloatRange( m_angVelMin, m_angVelMax );
+		bd.motionLocks = m_motionLocks;
+		bd.linearDamping = m_linearDamping;
+		bd.angularDamping = m_angularDamping;
+		bd.gravityScale = m_gravityScale;
+		bd.isBullet = m_isBullet;
+
+		b2BodyId body = b2CreateBody( m_worldId, &bd );
+		m_bodies.push_back( body );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.density = m_density;
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.restitution = m_restitution;
+		sd.material.friction = m_friction;
+		sd.material.customColor = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
+								  ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) |
+								  uint32_t( RandomFloatRange( 0, 1 ) * 255 );
+		sd.isSensor = true;
+		sd.enableSensorEvents = true;
+		sd.enableHitEvents = true;
+
+		b2Circle c{ { 0.0f, 0.0f }, 0.5f * m_shapeSize };
+		b2ShapeId sid = b2CreateCircleShape( body, &sd, &c );
+		m_shapeColorMap[sid] = sd.material.customColor;
+		m_generationLevel[sid] = genLevel;
+		m_projectileCount++;
+	}
+
+	// Cage sensor
+	b2BodyId CreateFullCage( b2WorldId worldId, float radius, float thickness, int segCount, float speed )
+	{
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = { 0.0f, 0.0f };
+		b2BodyId cage = b2CreateBody( worldId, &bd );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.friction = 0.1f;
+		sd.material.customColor = 0x44FFD5;
+		sd.isSensor = true;
+		sd.enableSensorEvents = true;
+
+		float dAng = 2.0f * b2_pi / segCount;
+		for ( int i = 0; i < segCount; ++i )
+		{
+			float a0 = i * dAng;
+			float a1 = ( i + 1 ) * dAng;
+
+			b2Vec2 p0 = { radius * std::cos( a0 ), radius * std::sin( a0 ) };
+			b2Vec2 p1 = { radius * std::cos( a1 ), radius * std::sin( a1 ) };
+			b2Vec2 c = 0.5f * ( p0 + p1 );
+			float ang = std::atan2( p1.y - p0.y, p1.x - p0.x );
+			float len = b2Distance( p0, p1 );
+
+			b2Polygon rect = b2MakeOffsetBox( 0.5f * len, 0.5f * thickness, c, b2MakeRot( ang ) );
+			b2ShapeId sid = b2CreatePolygonShape( cage, &sd, &rect );
+			m_segmentOriginalColor[sid] = sd.material.customColor;
+		}
+
+		b2BodyDef pivotDef;
+		pivotDef = b2DefaultBodyDef();
+		pivotDef.position = { 0.0f, 0.0f };
+		b2BodyId pivot = b2CreateBody( worldId, &pivotDef );
+
+		b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
+		jd.base.bodyIdA = pivot;
+		jd.base.bodyIdB = cage;
+		jd.enableMotor = true;
+		jd.motorSpeed = speed;
+		jd.maxMotorTorque = 1e5f;
+		b2CreateRevoluteJoint( worldId, &jd );
+
+		return cage;
+	}
+
+	// Création bodies + reset duplications/overlap/génération
+	void CreateBodies()
+	{
+		m_alreadyDuplicated.clear();
+		m_generationLevel.clear();
+		m_touchingSegments.clear();
+		g_randomSeed = (uint32_t)std::time( nullptr );
+
+		for ( b2BodyId id : m_bodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_bodies.clear();
+
+		for ( b2BodyId id : m_cageBodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_cageBodies.clear();
+
+		m_shapeColorMap.clear();
+		m_segmentOriginalColor.clear();
+
+		// Cage sensor
+		float radius = 8.0f;
+		m_cageBodies.push_back( CreateFullCage( m_worldId, radius, m_cageThickness, m_cageSegments, m_cageMotorSpeed ) );
+
+		// 1 projectile central
+		m_shapes[0].color = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
+							( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) | uint32_t( RandomFloatRange( 0, 1 ) * 255 );
+
+		m_projectileCount = 0; // Reset à chaque reset/simulation
+		CreateProjectile( { 0.0f, 0.0f }, 0 );
+		m_projectileCount++; // Incrémente ici
+	}
+};
+static int sampleCageSensorDuplication = RegisterSample( "9:16", "CageSensorDuplication", CageSensorDuplication::Create );
