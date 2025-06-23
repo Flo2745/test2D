@@ -94,7 +94,18 @@ set(BOX2D_SAMPLE_FILES
 	sample_stacking.cpp
 	sample_world.cpp
 	shader.cpp
-	shader.h)
+	shader.h
+    sample_9_16.cpp
+    sample_9_16_v2.cpp
+    sample_9_16.h
+    particules.cpp
+    particules.h
+    audiomanager.cpp
+    audiomanager.h
+	pixelart.cpp
+	pixelart.h
+	blueprint.cpp
+)
 
 add_executable(samples ${BOX2D_SAMPLE_FILES})
 

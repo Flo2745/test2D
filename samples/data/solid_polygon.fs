@@ -3,6 +3,8 @@
 
 #version 330
 
+uniform float u_opacity;
+
 in vec2 f_position;
 in vec2 f_points[8];
 flat in int f_count;
@@ -87,6 +89,7 @@ void main()
     vec4 front = vec4(borderColor.rgb, smoothstep(f_thickness, 0.0f, d));
 
     fragColor = blend_colors(front, back);
+    fragColor.a *= u_opacity; // <--- Opacité globale ici !
 
     // todo debugging
     // float resy = 3.0f / f_thickness;

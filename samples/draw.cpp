@@ -27,6 +27,8 @@
 
 #include <imgui.h>
 
+extern float g_shapeOpacity;
+
 #define BUFFER_OFFSET( x ) ( (const void*)( x ) )
 
 #define SHADER_TEXT( x ) "#version 330\n" #x
@@ -190,7 +192,7 @@ struct GLBackground
 
 		// struct RGBA8 c8 = MakeRGBA8( b2_colorGray2, 1.0f );
 		// glUniform3f(m_baseColorUniform, c8.r/255.0f, c8.g/255.0f, c8.b/255.0f);
-		glUniform3f( m_baseColorUniform, 0.2f, 0.2f, 0.2f );
+		glUniform3f( m_baseColorUniform, 0.0f, 0.0f, 1.0f );
 
 		glBindVertexArray( m_vaoId );
 
@@ -379,14 +381,15 @@ struct GLLines
 
 		const char* fs =
 			R"(
-			#version 330
-			in vec4 f_color;
-			out vec4 color;
-			void main(void)
-			{
-				color = f_color;
-			}
-			)";
+				#version 330
+				uniform float u_opacity;
+				in vec4 f_color;
+				out vec4 color;
+				void main(void)
+				{
+					color = vec4(f_color.rgb, f_color.a * u_opacity);
+				}
+				)";
 
 		m_programId = CreateProgramFromStrings( vs, fs );
 		m_projectionUniform = glGetUniformLocation( m_programId, "projectionMatrix" );
@@ -456,6 +459,7 @@ struct GLLines
 		glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
 
 		glUseProgram( m_programId );
+		glUniform1f( glGetUniformLocation( m_programId, "u_opacity" ), g_shapeOpacity );
 
 		float proj[16] = { 0.0f };
 		camera->BuildProjectionMatrix( proj, 0.1f );
@@ -741,6 +745,7 @@ struct GLSolidCircles
 		}
 
 		glUseProgram( m_programId );
+		glUniform1f( glGetUniformLocation( m_programId, "u_opacity" ), g_shapeOpacity );
 
 		float proj[16] = { 0.0f };
 		camera->BuildProjectionMatrix( proj, 0.2f );
@@ -906,6 +911,7 @@ struct GLSolidCapsules
 		}
 
 		glUseProgram( m_programId );
+		glUniform1f( glGetUniformLocation( m_programId, "u_opacity" ), g_shapeOpacity );
 
 		float proj[16] = { 0.0f };
 		camera->BuildProjectionMatrix( proj, 0.2f );
@@ -1089,6 +1095,7 @@ struct GLSolidPolygons
 		}
 
 		glUseProgram( m_programId );
+		glUniform1f( glGetUniformLocation( m_programId, "u_opacity" ), g_shapeOpacity );
 
 		float proj[16] = { 0.0f };
 		camera->BuildProjectionMatrix( proj, 0.2f );

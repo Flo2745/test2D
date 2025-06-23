@@ -58,6 +58,7 @@ static Sample* s_sample = nullptr;
 static bool s_rightMouseDown = false;
 static b2Vec2 s_clickPointWS = b2Vec2_zero;
 static float s_framebufferScale = 1.0f;
+float g_shapeOpacity = 1.0f;
 
 inline bool IsPowerOfTwo( int32_t x )
 {
@@ -392,12 +393,11 @@ static void UpdateUI()
 {
 	int maxWorkers = enki::GetNumHardwareThreads();
 
-	float fontSize = ImGui::GetFontSize();
-	float menuWidth = 13.0f * fontSize;
+	float menuWidth = 180.0f;
 	if ( s_context.draw.m_showUI )
 	{
-		ImGui::SetNextWindowPos( { s_context.camera.m_width - menuWidth - 0.5f * fontSize, 0.5f * fontSize } );
-		ImGui::SetNextWindowSize( { menuWidth, s_context.camera.m_height - fontSize } );
+		ImGui::SetNextWindowPos( { s_context.camera.m_width - menuWidth - 10.0f, 600.0f } );
+		ImGui::SetNextWindowSize( { menuWidth, s_context.camera.m_height - 20.0f } );
 
 		ImGui::Begin( "Tools", &s_context.draw.m_showUI,
 					  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse );
@@ -407,14 +407,45 @@ static void UpdateUI()
 			if ( ImGui::BeginTabItem( "Controls" ) )
 			{
 				ImGui::PushItemWidth( 100.0f );
-				ImGui::SliderInt( "Sub-steps", &s_context.subStepCount, 1, 32 );
-				ImGui::SliderFloat( "Hertz", &s_context.hertz, 5.0f, 240.0f, "%.0f hz" );
+				ImGui::SliderInt( "Sub-steps", &s_context.subStepCount, 1, 50 );
+				ImGui::SliderFloat( "Hertz", &s_context.hertz, 5.0f, 120.0f, "%.0f hz" );
 
 				if ( ImGui::SliderInt( "Workers", &s_context.workerCount, 1, maxWorkers ) )
 				{
 					s_context.workerCount = b2ClampInt( s_context.workerCount, 1, maxWorkers );
 					RestartSample();
 				}
+
+				static bool portraitMode = true;
+
+				if ( ImGui::Checkbox( "1440x2560 Portrait", &portraitMode ) )
+				{
+					GLFWmonitor* primary = glfwGetPrimaryMonitor();
+					if ( primary )
+					{
+						const GLFWvidmode* mode = glfwGetVideoMode( primary );
+
+						if ( portraitMode )
+						{
+							// Passe en 1440x2560, centré
+							glfwSetWindowAttrib( s_context.window, GLFW_DECORATED, GLFW_FALSE );
+							glfwSetWindowSize( s_context.window, 1440, 2560 );
+							int xpos = ( mode->width - 1440 ) / 2;
+							int ypos = ( mode->height - 2560 ) / 2;
+							glfwSetWindowPos( s_context.window, xpos, ypos );
+						}
+						else
+						{
+							// Passe en fullscreen borderless (utilise la résolution de l'écran)
+							glfwSetWindowAttrib( s_context.window, GLFW_DECORATED, GLFW_FALSE );
+							glfwSetWindowSize( s_context.window, mode->width, mode->height );
+							glfwSetWindowPos( s_context.window, 0, 0 );
+						}
+					}
+				}
+
+				ImGui::SliderFloat( "Shape Opacity", &g_shapeOpacity, 0.0f, 1.0f, "%.2f" );
+
 				ImGui::PopItemWidth();
 
 				ImGui::Separator();
@@ -530,9 +561,9 @@ static void UpdateUI()
 		}
 
 		ImGui::End();
-
-		s_sample->UpdateGui();
 	}
+
+	s_sample->UpdateGui();
 }
 
 int main( int, char** )
@@ -595,17 +626,24 @@ int main( int, char** )
 #endif
 	}
 
-	bool fullscreen = false;
-	if ( fullscreen )
+	glfwWindowHint( GLFW_DECORATED, GLFW_FALSE );
+	const int windowWidth = 1440;
+	const int windowHeight = 2560;
+	s_context.window = glfwCreateWindow( windowWidth, windowHeight, buffer, nullptr, nullptr );
+	if ( s_context.window == nullptr )
 	{
-		s_context.window = glfwCreateWindow( 1920, 1080, buffer, glfwGetPrimaryMonitor(), nullptr );
+		fprintf( stderr, "Failed to open GLFW window.\n" );
+		glfwTerminate();
+		return -1;
 	}
-	else
+	GLFWmonitor* primary = glfwGetPrimaryMonitor();
+	if ( primary )
 	{
-		s_context.window =
-			glfwCreateWindow( int( s_context.camera.m_width ), int( s_context.camera.m_height ), buffer, nullptr, nullptr );
+		const GLFWvidmode* mode = glfwGetVideoMode( primary );
+		int xpos = ( mode->width - windowWidth ) / 2;
+		int ypos = ( mode->height - windowHeight ) / 2;
+		glfwSetWindowPos( s_context.window, xpos, ypos );
 	}
-
 	if ( s_context.window == nullptr )
 	{
 		fprintf( stderr, "Failed to open GLFW window.\n" );

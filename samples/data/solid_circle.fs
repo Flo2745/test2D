@@ -3,6 +3,8 @@
 
 #version 330
 
+uniform float u_opacity;
+
 in vec2 f_position;
 in vec4 f_color;
 in float f_thickness;
@@ -53,4 +55,5 @@ void main()
     vec4 front = vec4(borderColor.rgb, smoothstep(f_thickness, 0.0f, d));
 
     fragColor = blend_colors(front, back);
+    fragColor.a *= u_opacity;  // <-- Applique l’opacité globale juste ici !
 }

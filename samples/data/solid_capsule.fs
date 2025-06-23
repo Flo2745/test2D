@@ -1,7 +1,6 @@
-// SPDX-FileCopyrightText: 2024 Erin Catto
-// SPDX-License-Identifier: MIT
-
 #version 330
+
+uniform float u_opacity;
 
 in vec2 f_position;
 in vec4 f_color;
@@ -58,4 +57,5 @@ void main()
     vec4 front = vec4(borderColor.rgb, smoothstep(f_thickness, 0.0f, d));
     
     color = blend_colors(front, back);
+    color.a *= u_opacity; // <-- Permet l’opacité dynamique du GUI !
 }
