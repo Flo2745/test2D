@@ -5345,14 +5345,21 @@ private:
 	std::vector<b2ShapeId> m_projectileShapes; // Les formes des équipes (projectiles)
 	std::vector<b2ShapeId> m_segmentShapes;	   // Les shapes de cage (segments)
 
-	void InitializeAudio()
-	{
-		std::filesystem::path p = "data/audio/Ticks";
-		if ( !std::filesystem::exists( p ) )
-			p = "D:/Sound & Fx/audio/Ticks";
-		m_audioManager.LoadFromDirectory( p.string() );
-		m_audioManager.SetVolume( m_soundVolume );
-	}
+        void InitializeAudio()
+        {
+                std::filesystem::path p = "data/audio/Ticks";
+                if ( !std::filesystem::exists( p ) )
+                        p = "D:/Sound & Fx/audio/Ticks";
+                m_audioManager.LoadFromDirectory( p.string() );
+                m_audioManager.SetVolume( m_soundVolume );
+        }
+
+        static uint32_t RandomColor()
+        {
+                return ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
+                       ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) |
+                       uint32_t( RandomFloatRange( 0, 1 ) * 255 );
+        }
 
 	b2BodyId CreateFullCage( b2WorldId worldId, float radius, float thickness, int segCount, float speed )
 	{
@@ -6183,12 +6190,6 @@ public:
 		if ( recreate || lockChanged || physChanged || cageChanged )
 			CreateBodies();
 
-		// === Fenêtre 1 : Contrôles (inchangée) ===
-		ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.15f, io.DisplaySize.y * 0.54f ), ImGuiCond_Always,
-								 ImVec2( 0.5f, 0.0f ) );
-		ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
-		ImGui::Begin( "BluePrint Settings" );
-		ImGui::End();
 
 		// === HUD : TITRE seul, ombre douce + texte blanc (minimaliste pro) ===
 		{
@@ -6346,9 +6347,7 @@ private:
 		sd.material = b2DefaultSurfaceMaterial();
 		sd.material.restitution = m_restitution;
 		sd.material.friction = m_friction;
-		sd.material.customColor = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
-								  ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) |
-								  uint32_t( RandomFloatRange( 0, 1 ) * 255 );
+                sd.material.customColor = RandomColor();
 		sd.isSensor = true;
 		sd.enableSensorEvents = true;
 		sd.enableHitEvents = true;
@@ -6434,8 +6433,7 @@ private:
 		m_cageBodies.push_back( CreateFullCage( m_worldId, radius, m_cageThickness, m_cageSegments, m_cageMotorSpeed ) );
 
 		// 1 projectile central
-		m_shapes[0].color = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
-							( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) | uint32_t( RandomFloatRange( 0, 1 ) * 255 );
+                m_shapes[0].color = RandomColor();
 
 		m_projectileCount = 0; // Reset à chaque reset/simulation
 		CreateProjectile( { 0.0f, 0.0f }, 0 );
