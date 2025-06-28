@@ -935,8 +935,8 @@ public:
 		// Les murs
 		{
 			// Paramètres de l'arène (9:16)
-			float arenaHalfWidth = 13.5f;  // Largeur intermédiaire
-			float arenaHalfHeight = 24.0f; // Hauteur intermédiaire
+			float arenaHalfWidth = 14.0f;  // Largeur intermédiaire
+			float arenaHalfHeight = 25.0f; // Hauteur intermédiaire
 
 			b2BodyDef bodyDef = b2DefaultBodyDef();
 			b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
@@ -6046,11 +6046,44 @@ public:
 		if ( !m_context->restart )
 		{
 			m_context->camera.m_center = { 0.0f, 0.0f };
-			m_context->camera.m_zoom = 20.0f;
+			m_context->camera.m_zoom = 25.0f;
 		}
 		b2World_SetGravity( m_worldId, m_gravity );
 		InitializeAudio();
 		CreateBodies();
+
+		// Les murs
+		{
+			// Paramètres de l'arène (9:16)
+			float arenaHalfWidth = 14.0f;  // Largeur intermédiaire
+			float arenaHalfHeight = 25.0f; // Hauteur intermédiaire
+
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.material = b2DefaultSurfaceMaterial();
+			shapeDef.material.restitution = 1.0f;
+			shapeDef.material.friction = 0.0f;
+			shapeDef.material.customColor = 0xAAAAAA;
+
+			// Mur du bas
+			b2Segment bottomWall = { { -arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, -arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &bottomWall );
+
+			// Mur du haut
+			b2Segment topWall = { { -arenaHalfWidth, arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &topWall );
+
+			// Mur gauche
+			b2Segment leftWall = { { -arenaHalfWidth, -arenaHalfHeight }, { -arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &leftWall );
+
+			// Mur droit
+			b2Segment rightWall = { { arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &rightWall );
+		}
+
 	}
 
 	//---------------------------------------------------------------
@@ -6443,3 +6476,802 @@ private:
 	}
 };
 static int sampleCageSensorDuplication = RegisterSample( "9:16", "CageSensorDuplication", CageSensorDuplication::Create );
+
+
+
+class Testtttttttttttttttttttttt : public Sample
+{
+public:
+	struct ShapeUserData
+	{
+		bool shouldDestroyVisitors;
+	};
+	explicit Testtttttttttttttttttttttt( SampleContext* context )
+		: Sample( context )
+	{
+		if ( m_context->restart == false )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 25.0f;
+		}
+
+		m_activeSensor.shouldDestroyVisitors = true;
+
+		// Création du body dynamique
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		bodyDef.type = b2_dynamicBody;
+		bodyDef.position = { 0.0f, 0.0f };
+		bodyDef.linearVelocity = { 0.0f, -5.0f };
+		b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+		// Filtrage pour les collisions
+		static const uint16_t CATEGORY_DYNAMIC = 0x0002;
+		static const uint16_t CATEGORY_SENSOR = 0x0004;
+		static const uint16_t CATEGORY_WALL = 0x0001;
+
+		// Création de la forme solide (rebondissante)
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.density = 1.0f;
+		shapeDef.material = b2DefaultSurfaceMaterial();
+		shapeDef.material.restitution = 1.0f; // Rebond élevé
+		shapeDef.material.friction = 0.0f;
+		shapeDef.material.customColor = 0xFF00FF;
+		shapeDef.filter.categoryBits = CATEGORY_DYNAMIC;
+		shapeDef.filter.maskBits = CATEGORY_WALL | CATEGORY_SENSOR; // Interagit avec les murs et les sensors
+
+		b2Polygon solidBox = b2MakeBox( 2.5f, 2.5f );
+		b2CreatePolygonShape( bodyId, &shapeDef, &solidBox );
+
+		// Création de la "peau" sensor
+		b2ShapeDef sensorDef = b2DefaultShapeDef();
+		sensorDef.isSensor = true;
+		sensorDef.enableSensorEvents = true;
+		sensorDef.userData = &m_activeSensor;
+		sensorDef.filter.categoryBits = CATEGORY_SENSOR;
+		sensorDef.filter.maskBits = CATEGORY_DYNAMIC | CATEGORY_WALL; // Peut détecter les dynamiques et les murs
+		sensorDef.material.customColor = 0xAAAAAA;					  // Couleur du sensor
+
+		// Définition du sensor avec une légère extension pour éviter les erreurs de collision
+		float padding = 0.1f;
+		b2Polygon sensorBox = b2MakeBox( 2.5f + padding, 2.5f + padding );
+		b2CreatePolygonShape( bodyId, &sensorDef, &sensorBox );
+
+		// Les murs
+		{
+			// Paramètres de l'arène (9:16)
+			float arenaHalfWidth = 14.0f;  // Largeur intermédiaire
+			float arenaHalfHeight = 25.0f; // Hauteur intermédiaire
+
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.material = b2DefaultSurfaceMaterial();
+			shapeDef.material.restitution = 1.0f;
+			shapeDef.material.friction = 0.0f;
+			shapeDef.material.customColor = 0xAAAAAA;
+
+			// Mur du bas
+			b2Segment bottomWall = { { -arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, -arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &bottomWall );
+
+			// Mur du haut
+			b2Segment topWall = { { -arenaHalfWidth, arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &topWall );
+
+			// Mur gauche
+			b2Segment leftWall = { { -arenaHalfWidth, -arenaHalfHeight }, { -arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &leftWall );
+
+			// Mur droit
+			b2Segment rightWall = { { arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &rightWall );
+		}
+	}
+
+	void CreateRow( float y )
+	{
+		float shift = 5.0f;
+		float xCenter = 0.5f * shift * m_columnCount;
+
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		bodyDef.type = b2_dynamicBody;
+		bodyDef.gravityScale = 0.0f;
+		bodyDef.linearVelocity = { 0.0f, -5.0f };
+
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.enableSensorEvents = true;
+
+		b2Circle circle = { { 0.0f, 0.0f }, 0.5f };
+		for ( int i = 0; i < m_columnCount; ++i )
+		{
+			float x = -0.5f * ( m_columnCount - 1 ) * shift + i * shift;
+			bodyDef.position = { x, 20.0f };
+			b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2CreateCircleShape( bodyId, &shapeDef, &circle );
+		}
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		if ( m_stepCount == m_lastStepCount )
+		{
+			return;
+		}
+
+		std::set<b2BodyId> zombies;
+
+		b2SensorEvents events = b2World_GetSensorEvents( m_worldId );
+		for ( int i = 0; i < events.beginCount; ++i )
+		{
+			b2SensorBeginTouchEvent* event = events.beginEvents + i;
+
+			ShapeUserData* userData = static_cast<ShapeUserData*>( b2Shape_GetUserData( event->sensorShapeId ) );
+			if ( userData->shouldDestroyVisitors )
+			{
+				zombies.emplace( b2Shape_GetBody( event->visitorShapeId ) );
+			}
+			else
+			{
+
+				b2SurfaceMaterial surfaceMaterial = b2Shape_GetSurfaceMaterial( event->visitorShapeId );
+				surfaceMaterial.customColor = b2_colorLime;
+				b2Shape_SetSurfaceMaterial( event->visitorShapeId, surfaceMaterial );
+			}
+		}
+
+		for ( int i = 0; i < events.endCount; ++i )
+		{
+			b2SensorEndTouchEvent* event = events.endEvents + i;
+
+			if ( b2Shape_IsValid( event->visitorShapeId ) == false )
+			{
+				continue;
+			}
+
+			b2SurfaceMaterial surfaceMaterial = b2Shape_GetSurfaceMaterial( event->visitorShapeId );
+			surfaceMaterial.customColor = 0;
+			b2Shape_SetSurfaceMaterial( event->visitorShapeId, surfaceMaterial );
+		}
+
+		for ( b2BodyId bodyId : zombies )
+		{
+			b2DestroyBody( bodyId );
+		}
+
+		int delay = 0x0F;
+
+		if ( ( m_stepCount & delay ) == 0 )
+		{
+			CreateRow( 0.5f * m_rowCount + 5.0f );
+		}
+
+		m_lastStepCount = m_stepCount;
+
+		m_maxBeginCount = b2MaxInt( events.beginCount, m_maxBeginCount );
+		m_maxEndCount = b2MaxInt( events.endCount, m_maxEndCount );
+		DrawTextLine( "max begin touch events = %d", m_maxBeginCount );
+		DrawTextLine( "max end touch events = %d", m_maxEndCount );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new Testtttttttttttttttttttttt( context );
+	}
+
+	static constexpr int m_columnCount = 5;
+	static constexpr int m_rowCount = 5;
+	int m_maxBeginCount;
+	int m_maxEndCount;
+	ShapeUserData m_passiveSensor;
+	ShapeUserData m_activeSensor;
+	int m_lastStepCount;
+};
+
+static int Testtttttttttttttttttttttt = RegisterSample( "9:16", "Testtttttttttttttttttttttt", Testtttttttttttttttttttttt::Create );
+
+class ColumnColorCrash : public Sample
+{
+public:
+	explicit ColumnColorCrash( SampleContext* context )
+		: Sample( context )
+	{
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 25.0f;
+		}
+
+		// Création des murs de l’arène 9:16
+		{
+			const float arenaHalfWidth = 10.0f;
+			const float arenaHalfHeight = 10.0f;
+
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.material = b2DefaultSurfaceMaterial();
+			shapeDef.material.restitution = 1.0f;
+			shapeDef.material.friction = 0.0f;
+			shapeDef.material.customColor = 0xAAAAAA;
+			shapeDef.filter.categoryBits = CATEGORY_WALL;
+			shapeDef.filter.maskBits = CATEGORY_ROW;
+
+			b2Segment bottom = { { -arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, -arenaHalfHeight } };
+			b2Segment top = { { -arenaHalfWidth, arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2Segment left = { { -arenaHalfWidth, -arenaHalfHeight }, { -arenaHalfWidth, arenaHalfHeight } };
+			b2Segment right = { { arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+
+			b2CreateSegmentShape( groundId, &shapeDef, &bottom );
+			b2CreateSegmentShape( groundId, &shapeDef, &top );
+			b2CreateSegmentShape( groundId, &shapeDef, &left );
+			b2CreateSegmentShape( groundId, &shapeDef, &right );
+		}
+
+		// Ajout d’un gros objet dynamique lent
+		{
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			bodyDef.type = b2_dynamicBody;
+			bodyDef.position = { 20.0f, 0.0f };
+			bodyDef.linearVelocity = { -1.0f, 0.0f }; // vers la gauche lentement
+			bodyDef.gravityScale = 0.0f;
+			b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2Polygon bigBox = b2MakeBox( 2.5f, 2.5f ); // 5x5 total
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.density = 100.0f;
+			shapeDef.material = b2DefaultSurfaceMaterial();
+			shapeDef.material.friction = 0.3f;
+			shapeDef.material.restitution = 0.0f;
+			shapeDef.material.customColor = 0x666666; // gris foncé
+			shapeDef.filter.categoryBits = CATEGORY_BIGBOX;
+			shapeDef.filter.maskBits = CATEGORY_ROW;
+
+
+			b2CreatePolygonShape( bodyId, &shapeDef, &bigBox );
+		}
+	}
+
+	void CreateRow( float y )
+	{
+		const float shift = 2.0f;
+		const float radius = 0.5f;
+
+		constexpr uint32_t colors[] = {
+			0xFF3030, // rouge
+			0xFFA500, // orange
+			0xFFD700, // or
+			0x00AA00, // vert foncé
+			0x800080, // violet
+			0x8B4513, // brun
+			0xFF69B4, // rose
+			0xAAAA00  // olive
+		};
+
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		bodyDef.type = b2_dynamicBody;
+		bodyDef.gravityScale = 0.0f;
+		bodyDef.linearVelocity = { 0.0f, -5.0f };
+
+		b2Circle circle = { { 0.0f, 0.0f }, radius };
+
+		for ( int i = 0; i < m_columnCount; ++i )
+		{
+			float x = -0.5f * ( m_columnCount - 1 ) * shift + i * shift;
+			bodyDef.position = { x, y };
+			b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.enableSensorEvents = true;
+			shapeDef.material.customColor = colors[i % std::size( colors )];
+			shapeDef.filter.categoryBits = CATEGORY_ROW;
+			shapeDef.filter.maskBits = CATEGORY_ROW | CATEGORY_WALL | CATEGORY_BIGBOX;
+
+			b2CreateCircleShape( bodyId, &shapeDef, &circle );
+		}
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		if ( ( m_stepCount & 0x0F ) == 0 )
+		{
+			CreateRow( 9.5f );
+		}
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new ColumnColorCrash( context );
+	}
+
+	static constexpr int m_columnCount = 8;
+	static constexpr uint16_t CATEGORY_WALL = 0x0001;
+	static constexpr uint16_t CATEGORY_ROW = 0x0002;
+	static constexpr uint16_t CATEGORY_BIGBOX = 0x0004;
+};
+
+static int sampleColumnColorCrash = RegisterSample( "9:16", "ColumnColorCrash", ColumnColorCrash::Create );
+
+class GrowingCageSample : public Sample
+{
+public:
+	explicit GrowingCageSample( SampleContext* context )
+		: Sample( context )
+	{
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 20.0f;
+		}
+
+		// Valeurs par défaut UNIQUEMENT ici :
+		m_segmentCount = 3;
+		m_maxSegments = 200;
+		m_radius = 8.0f;
+		m_thickness = 0.25f;
+		m_projSize = 0.5f;
+		m_projRestitution = 1.0f;
+		m_projFriction = 0.0f;
+		m_projSpeedX = 6.0f;
+		m_projSpeedY = 0.0f;
+		m_audioVolume = 40.0f;
+		m_recreateCage = true;
+		m_recreateProjectile = true;
+		m_cageColor = 0x44FFD5;
+		m_cageMotorSpeed = 0.1f;
+		m_cageDensity = 100.0f;
+		m_projectileId = b2_nullBodyId;
+		m_cageBodyId = b2_nullBodyId;
+
+		InitializeAudio();
+		b2World_SetGravity( m_worldId, m_gravity );
+		CreateCage( m_segmentCount );
+		CreateProjectile( { 0.0f, 0.0f }, { m_projSpeedX, m_projSpeedY } );
+	}
+
+	void InitializeAudio()
+	{
+		std::filesystem::path p = "data/audio/Ticks";
+		if ( !std::filesystem::exists( p ) )
+			p = "D:/Sound & Fx/audio/polygones139";
+		m_audioManager.LoadFromDirectory( p.string() );
+		m_audioManager.SetVolume( m_audioVolume );
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		b2ContactEvents evts = b2World_GetContactEvents( m_worldId );
+		for ( int i = 0; i < evts.hitCount; ++i )
+		{
+			const b2ContactHitEvent& hit = evts.hitEvents[i];
+
+			bool aIsProj = B2_ID_EQUALS( b2Shape_GetBody( hit.shapeIdA ), m_projectileId );
+			bool bIsProj = B2_ID_EQUALS( b2Shape_GetBody( hit.shapeIdB ), m_projectileId );
+			bool aIsCage = B2_ID_EQUALS( b2Shape_GetBody( hit.shapeIdA ), m_cageBodyId );
+			bool bIsCage = B2_ID_EQUALS( b2Shape_GetBody( hit.shapeIdB ), m_cageBodyId );
+
+			if ( ( aIsProj && bIsCage ) || ( bIsProj && aIsCage ) )
+			{
+				m_prevSegmentCount = m_segmentCount;
+				if ( m_segmentCount < m_maxSegments )
+				{
+					++m_segmentCount;
+					if ( m_recreateCage )
+						RecreateCage();
+				}
+				m_audioManager.HandleHitEffect( hit.point, hit.approachSpeed, m_stepCount );
+				break;
+			}
+		}
+		m_audioManager.PlayQueued();
+	}
+
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+
+		// --- Fenêtre de paramètres modifiables ---
+		if ( m_context->draw.m_showUI )
+		{
+			bool recreateCage = false, recreateProj = false, recreateAudio = false;
+
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.16f, io.DisplaySize.y * 0.52f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( ImVec2( 380, 0 ), ImGuiCond_Always );
+			ImGui::Begin( "Growing Cage Settings" );
+			ImGui::Text( "Elapsed Time: %.2f s", ImGui::GetTime() );
+			ImGui::Text( "Cage Parameters" );
+			recreateCage |= ImGui::SliderInt( "Segments", &m_segmentCount, 3, m_maxSegments );
+			recreateCage |= ImGui::SliderFloat( "Cage radius", &m_radius, 2.0f, 25.0f, "%.2f" );
+			recreateCage |= ImGui::SliderFloat( "Cage thickness", &m_thickness, 0.05f, 2.0f, "%.2f" );
+			recreateCage |= ImGui::SliderFloat( "Cage density", &m_cageDensity, 0.1f, 1000.0f, "%.2f" );
+
+			// Couleur cage (ColorEdit3)
+			float cageColor[3] = { ( ( m_cageColor >> 16 ) & 0xFF ) / 255.0f, ( ( m_cageColor >> 8 ) & 0xFF ) / 255.0f,
+								   ( m_cageColor & 0xFF ) / 255.0f };
+			if ( ImGui::ColorEdit3( "Cage color", cageColor, ImGuiColorEditFlags_NoInputs ) )
+			{
+				m_cageColor = ( uint32_t( cageColor[0] * 255 ) << 16 ) | ( uint32_t( cageColor[1] * 255 ) << 8 ) |
+							  uint32_t( cageColor[2] * 255 );
+				recreateCage = true;
+			}
+
+			recreateCage |= ImGui::SliderFloat( "Cage rotation speed", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
+
+			ImGui::Separator();
+			ImGui::Text( "World Parameters" );
+			// Contrôle 2 axes pour la gravité (x, y)
+			if ( ImGui::SliderFloat2( "Gravity (x, y)", &m_gravity.x, -30.0f, 30.0f, "%.2f" ) )
+			{
+				b2World_SetGravity( m_worldId, m_gravity );
+			}
+			// (Optionnel) Remettre la gravité à la valeur par défaut
+			if ( ImGui::Button( "Reset Gravity" ) )
+			{
+				m_gravity = { 0.0f, -10.0f };
+				b2World_SetGravity( m_worldId, m_gravity );
+			}
+
+			ImGui::Separator();
+
+			ImGui::Text( "Projectile Parameters" );
+			recreateProj |= ImGui::SliderFloat( "Proj. size", &m_projSize, 0.1f, 5.0f, "%.2f" );
+			recreateProj |= ImGui::SliderFloat( "Proj. restitution", &m_projRestitution, 0.0f, 2.0f, "%.2f" );
+			recreateProj |= ImGui::SliderFloat( "Proj. friction", &m_projFriction, 0.0f, 1.0f, "%.2f" );
+			recreateProj |= ImGui::SliderFloat( "Proj. speed X", &m_projSpeedX, -30.0f, 30.0f, "%.2f" );
+			recreateProj |= ImGui::SliderFloat( "Proj. speed Y", &m_projSpeedY, -30.0f, 30.0f, "%.2f" );
+			recreateProj |= ImGui::SliderFloat( "Proj. linear damping", &m_projLinearDamping, 0.0f, 10.0f, "%.2f" );
+			recreateProj |= ImGui::SliderFloat( "Proj. angular damping", &m_projAngularDamping, 0.0f, 5.0f, "%.2f" );
+
+			ImGui::Separator();
+
+			recreateAudio |= ImGui::SliderFloat( "Audio volume", &m_audioVolume, 0.0f, 100.0f, "%.0f%%" );
+
+			ImGui::Checkbox( "Recreate cage on change", &m_recreateCage );
+			ImGui::SameLine();
+			ImGui::Checkbox( "Recreate projectile on change", &m_recreateProjectile );
+
+			ImGui::End();
+
+			if ( recreateAudio )
+				m_audioManager.SetVolume( m_audioVolume );
+			if ( m_recreateCage && recreateCage )
+				RecreateCage();
+			if ( m_recreateProjectile && recreateProj )
+				RecreateProjectile();
+		}
+
+		// --- HUD titre polygone (toujours visible, centré) ---
+		{
+			const char* polyName = "Unknown";
+			if ( m_segmentCount >= 3 && m_segmentCount - 3 < (int)( sizeof( s_polygonNames ) / sizeof( s_polygonNames[0] ) ) )
+				polyName = s_polygonNames[m_segmentCount - 3];
+
+			ImFont* titleFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::PushFont( titleFont );
+			ImVec2 ts = ImGui::CalcTextSize( polyName );
+			ImGui::PopFont();
+
+			float padX = ts.x * 0.25f;
+			float padY = ts.y * 0.55f;
+			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
+
+			// Centré, position en haut (ajuste Y si besoin)
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.20f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+			ImGui::Begin( "##PolyTitle", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
+
+			dl->AddText( titleFont, titleFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 100 ), polyName );
+			dl->AddText( titleFont, titleFont->FontSize, tp, IM_COL32( 220, 235, 255, 245 ), polyName );
+
+			ImGui::End();
+		}
+
+		// --- HUD nombre de côtés (toujours visible, sous le titre) ---
+		{
+			std::string sidesText = "Sides: " + std::to_string( m_segmentCount );
+
+			ImFont* sidesFont = m_context->draw.m_mediumFont ? m_context->draw.m_mediumFont : ImGui::GetFont();
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::PushFont( sidesFont );
+			ImVec2 ts = ImGui::CalcTextSize( sidesText.c_str() );
+			ImGui::PopFont();
+
+			float padX = ts.x * 0.18f;
+			float padY = ts.y * 0.42f;
+			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
+
+			// Positionné juste sous le titre (tu peux jouer sur le 0.245f pour rapprocher/éloigner)
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.245f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+			ImGui::Begin( "##PolySides", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
+
+			dl->AddText( sidesFont, sidesFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 80 ),
+						 sidesText.c_str() );
+			dl->AddText( sidesFont, sidesFont->FontSize, tp, IM_COL32( 245, 228, 110, 235 ), sidesText.c_str() );
+
+			ImGui::End();
+		}
+
+		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
+	}
+
+
+	void CreateCage( int segmentCount )
+	{
+		if ( B2_IS_NON_NULL( m_cageBodyId ) )
+		{
+			b2DestroyBody( m_cageBodyId );
+			m_cageBodyId = b2_nullBodyId;
+		}
+
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = { 0.0f, 0.0f };
+		m_cageBodyId = b2CreateBody( m_worldId, &bd );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.customColor = m_cageColor; // <-- Applique la couleur utilisateur !
+		sd.material.friction = 0.0f;
+		sd.density = m_cageDensity;
+		sd.isSensor = false;
+
+		float dAng = 2.0f * b2_pi / float( segmentCount );
+
+		for ( int i = 0; i < segmentCount; ++i )
+		{
+			float a0 = i * dAng;
+			float a1 = ( i + 1 ) * dAng;
+
+			b2Vec2 p0 = { m_radius * std::cos( a0 ), m_radius * std::sin( a0 ) };
+			b2Vec2 p1 = { m_radius * std::cos( a1 ), m_radius * std::sin( a1 ) };
+			b2Vec2 c = 0.5f * ( p0 + p1 );
+			float ang = std::atan2( p1.y - p0.y, p1.x - p0.x );
+			float len = b2Distance( p0, p1 );
+
+			b2Polygon rect = b2MakeOffsetBox( 0.5f * len, 0.5f * m_thickness, c, b2MakeRot( ang ) );
+			b2CreatePolygonShape( m_cageBodyId, &sd, &rect );
+		}
+
+		// Ajout du pivot
+		b2BodyDef pivotDef = b2DefaultBodyDef();
+		pivotDef.position = { 0.0f, 0.0f };
+		b2BodyId pivot = b2CreateBody( m_worldId, &pivotDef );
+
+		b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
+		jd.base.bodyIdA = pivot;
+		jd.base.bodyIdB = m_cageBodyId;
+		jd.enableMotor = true;
+		jd.motorSpeed = m_cageMotorSpeed; // <-- Applique la vitesse utilisateur
+		jd.maxMotorTorque = 1e5f;
+		b2CreateRevoluteJoint( m_worldId, &jd );
+	}
+
+	void CreateProjectile( const b2Vec2& pos, const b2Vec2& velocity )
+	{
+		if ( B2_IS_NON_NULL( m_projectileId ) )
+		{
+			b2DestroyBody( m_projectileId );
+			m_projectileId = b2_nullBodyId;
+		}
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = pos;
+		bd.linearVelocity = velocity;
+		bd.isBullet = true;
+		bd.linearDamping = m_projLinearDamping;
+		bd.angularDamping = m_projAngularDamping;
+
+		m_projectileId = b2CreateBody( m_worldId, &bd );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.density = 1.0f;
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.restitution = m_projRestitution;
+		sd.material.friction = m_projFriction;
+		sd.material.customColor = 0xE53F3F;
+		sd.enableHitEvents = true;
+
+		b2Circle circle = { { 0.0f, 0.0f }, m_projSize };
+		b2CreateCircleShape( m_projectileId, &sd, &circle );
+	}
+
+	void RecreateCage()
+	{
+		CreateCage( m_segmentCount );
+	}
+	void RecreateProjectile()
+	{
+		CreateProjectile( { 0.0f, 0.0f }, { m_projSpeedX, m_projSpeedY } );
+	}
+
+	static constexpr const char* s_polygonNames[] = { "Triangle",
+													  "Quadrilateral",
+													  "Pentagon",
+													  "Hexagon",
+													  "Heptagon",
+													  "Octagon",
+													  "Nonagon",
+													  "Decagon",
+													  "Hendecagon",
+													  "Dodecagon",
+													  "Tridecagon",
+													  "Tetradecagon",
+													  "Pentadecagon",
+													  "Hexadecagon",
+													  "Heptadecagon",
+													  "Octadecagon",
+													  "Enneadecagon",
+													  "Icosagon",
+													  "Icosikaihenagon",
+													  "Icosikaidigon",
+													  "Icosikaitrigon",
+													  "Icosikaitetragon",
+													  "Icosikaipentagon",
+													  "Icosikaihexagon",
+													  "Icosikaiheptagon",
+													  "Icosikaioctagon",
+													  "Icosikaienneagon",
+													  "Triacontagon",
+													  "Triacontakaihenagon",
+													  "Triacontakaidigon",
+													  "Triacontakaitrigon",
+													  "Triacontakaitetragon",
+													  "Triacontakaipentagon",
+													  "Triacontakaihexagon",
+													  "Triacontakaiheptagon",
+													  "Triacontakaioctagon",
+													  "Triacontakaienneagon",
+													  "Tetracontagon",
+													  "Tetracontakaihenagon",
+													  "Tetracontakaidigon",
+													  "Tetracontakaitrigon",
+													  "Tetracontakaitetragon",
+													  "Tetracontakaipentagon",
+													  "Tetracontakaihexagon",
+													  "Tetracontakaiheptagon",
+													  "Tetracontakaioctagon",
+													  "Tetracontakaienneagon",
+													  "Pentacontagon",
+													  "Pentacontakaihenagon",
+													  "Pentacontakaidigon",
+													  "Pentacontakaitrigon",
+													  "Pentacontakaitetragon",
+													  "Pentacontakaipentagon",
+													  "Pentacontakaihexagon",
+													  "Pentacontakaiheptagon",
+													  "Pentacontakaioctagon",
+													  "Pentacontakaienneagon",
+													  "Hexacontagon",
+													  "Hexacontakaihenagon",
+													  "Hexacontakaidigon",
+													  "Hexacontakaitrigon",
+													  "Hexacontakaitetragon",
+													  "Hexacontakaipentagon",
+													  "Hexacontakaihexagon",
+													  "Hexacontakaiheptagon",
+													  "Hexacontakaioctagon",
+													  "Hexacontakaienneagon",
+													  "Heptacontagon",
+													  "Heptacontakaihenagon",
+													  "Heptacontakaidigon",
+													  "Heptacontakaitrigon",
+													  "Heptacontakaitetragon",
+													  "Heptacontakaipentagon",
+													  "Heptacontakaihexagon",
+													  "Heptacontakaiheptagon",
+													  "Heptacontakaioctagon",
+													  "Heptacontakaienneagon",
+													  "Octacontagon",
+													  "Octacontakaihenagon",
+													  "Octacontakaidigon",
+													  "Octacontakaitrigon",
+													  "Octacontakaitetragon",
+													  "Octacontakaipentagon",
+													  "Octacontakaihexagon",
+													  "Octacontakaiheptagon",
+													  "Octacontakaioctagon",
+													  "Octacontakaienneagon",
+													  "Enneacontagon",
+													  "Enneacontakaihenagon",
+													  "Enneacontakaidigon",
+													  "Enneacontakaitrigon",
+													  "Enneacontakaitetragon",
+													  "Enneacontakaipentagon",
+													  "Enneacontakaihexagon",
+													  "Enneacontakaiheptagon",
+													  "Enneacontakaioctagon",
+													  "Enneacontakaienneagon",
+													  "Hectogon",
+													  "Hectogonkaimonogon",
+													  "Hectogonkaidigon",
+													  "Hectogonkaitrigon",
+													  "Hectogonkaitetragon",
+													  "Hectogonkaipentagon",
+													  "Hectogonkaihexagon",
+													  "Hectogonkaiheptagon",
+													  "Hectogonkaioctagon",
+													  "Hectogonkainonagon",
+													  "Hectogonkaidecagon",
+													  "Hectogonkaihendecagon",
+													  "Hectogonkaidodecagon",
+													  "Hectogonkaitridecagon",
+													  "Hectogonkaitetradecagon",
+													  "Hectogonkaipentadecagon",
+													  "Hectogonkaihexadecagon",
+													  "Hectogonkaiheptadecagon",
+													  "Hectogonkaioctadecagon",
+													  "Hectogonkaienneadecagon",
+													  "Hectogonkaiicosagon",
+													  "Hectogonkaiicosikaihenagon",
+													  "Hectogonkaiicosikaidigon",
+													  "Hectogonkaiicosikaitrigon",
+													  "Hectogonkaiicosikaitetragon",
+													  "Hectogonkaiicosikaipentagon",
+													  "Hectogonkaiicosikaihexagon",
+													  "Hectogonkaiicosikaiheptagon",
+													  "Hectogonkaiicosikaioctagon",
+													  "Hectogonkaiicosikaienneagon",
+													  "Hectogonkaitriacontagon",
+													  "Hectogonkaitriacontakaihenagon",
+													  "Hectogonkaitriacontakaidigon",
+													  "Hectogonkaitriacontakaitrigon",
+													  "Hectogonkaitriacontakaitetragon",
+													  "Hectogonkaitriacontakaipentagon",
+													  "Hectogonkaitriacontakaihexagon",
+													  "Hectogonkaitriacontakaiheptagon",
+													  "Hectogonkaitriacontakaioctagon",
+													  "Hectogonkaitriacontakaienneagon" };
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new GrowingCageSample( context );
+	}
+
+private:
+	b2BodyId m_cageBodyId;
+	b2BodyId m_projectileId;
+	b2Vec2 m_gravity = { 0.0f, -40.0f };
+	int m_segmentCount, m_prevSegmentCount, m_maxSegments;
+	float m_radius, m_thickness;
+	float m_projSize, m_projRestitution, m_projFriction;
+	float m_projSpeedX, m_projSpeedY;
+	float m_projLinearDamping = 0.01f;
+	float m_projAngularDamping = 0.0f;
+	float m_audioVolume;
+	bool m_recreateCage, m_recreateProjectile;
+	uint32_t m_cageColor;
+	float m_cageMotorSpeed;
+	float m_cageDensity;
+
+	AudioManager m_audioManager;
+};
+
+static int sampleGrowingCage = RegisterSample( "9:16", "Growing Cage", GrowingCageSample::Create );
