@@ -120,7 +120,7 @@ void AudioManager::Clear()
 
 void AudioManager::HandleHitEffect( const b2Vec2& impactPoint, float speed, int stepIndex )
 {
-	// printf("Impact! (%.2f, %.2f) speed %.2f\n", impactPoint.x, impactPoint.y, speed);
+	//printf("Impact! (%.2f, %.2f) speed %.2f\n", impactPoint.x, impactPoint.y, speed);
 	if ( stepIndex - m_lastImpactStep < MIN_STEPS_BETWEEN_IMPACTS )
 		return;
 
@@ -148,12 +148,12 @@ void AudioManager::HandleHitEffect( const b2Vec2& impactPoint, float speed, int 
 
 void AudioManager::DrawHitEffects( Draw* draw, int currentStep )
 {
-	/*for ( const auto& e : m_hitEvents )
+	for ( const auto& e : m_hitEvents )
 	{
 		if ( e.stepIndex > 0 && currentStep <= e.stepIndex + 30 )
 		{
 			draw->DrawCircle( e.point, 0.1f, b2_colorOrangeRed );
 			draw->DrawString( e.point, "%.1f", e.speed );
 		}
-	}*/
+	}
 }

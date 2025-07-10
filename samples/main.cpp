@@ -161,8 +161,8 @@ static void CreateUI( GLFWwindow* window, const char* glslVersion )
 		fontConfig.RasterizerMultiply = s_context.uiScale * s_framebufferScale;
 
 		float regularSize = floorf( 13.0f * s_context.uiScale );
-		float mediumSize = floorf( 40.0f * s_context.uiScale );
-		float largeSize = floorf( 64.0f * s_context.uiScale );
+		float mediumSize = floorf( 54.0f * s_context.uiScale );
+		float largeSize = floorf( 80.0f * s_context.uiScale );
 
 		ImGuiIO& io = ImGui::GetIO();
 		s_context.draw.m_regularFont = io.Fonts->AddFontFromFileTTF( fontPath, regularSize, &fontConfig );

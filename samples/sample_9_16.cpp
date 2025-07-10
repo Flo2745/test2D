@@ -831,7 +831,7 @@ public:
 		ImGui::Begin( "Overlap Recovery Controls" );
 		bool rebuild = false;
 		rebuild |= ImGui::SliderFloat( "Extent", &m_extent, 0.1f, 1.0f, "%.2f" );
-		rebuild |= ImGui::SliderInt( "Base Count", &m_baseCount, 1, 10 );
+		rebuild |= ImGui::SliderInt( "Base Count", &m_baseCount, 1, 25 );
 		rebuild |= ImGui::SliderFloat( "Overlap", &m_overlap, 0.0f, 1.0f, "%.2f" );
 		rebuild |= ImGui::SliderFloat( "Pushout", &m_pushout, 0.0f, 10.0f, "%.1f" );
 		rebuild |= ImGui::SliderFloat( "Hertz", &m_hertz, 1.0f, 120.0f, "%.1f" );
@@ -2603,112 +2603,62 @@ public:
 		e_boxShape
 	};
 
-	enum class AspectRatio
-	{
-		Ratio_16_9 = 0,
-		Ratio_9_16,
-		Ratio_1_1
-	};
-
-	AspectRatio m_aspectRatio = AspectRatio::Ratio_16_9;
-
-	struct HitEvent
-	{
-		b2Vec2 point = { 0.0f, 0.0f };
-		float speed = 0.0f;
-		int stepIndex = -1;
-	};
-
 	explicit MetamorphicBounce( SampleContext* context )
 		: Sample( context )
+		, m_shapeType( e_boxShape )
+		, m_enableHitEvents( true )
+		, m_soundVolume( 30.0f )
 		, m_fixedRotation( false )
 		, m_enableScreenShake( true )
 		, spawnTimer( 0 )
 		, spawnInterval( 10 )
 		, shakeDuration( 0 )
 		, shakeIntensity( 0.0f )
+		, m_anchorId( b2_nullBodyId )
+		, m_motorJointId( b2_nullJointId )
 	{
 		if ( !m_context->restart )
 		{
 			m_context->camera.m_center = { 0.0f, 0.0f };
 			m_context->camera.m_zoom = 25.0f;
 		}
-		for ( auto& e : m_hitEvents )
-			e = HitEvent();
-
-		m_audioManager.LoadFromDirectory( "D:/Sound & Fx/audio/minecraft/xp" );
-		m_audioManager.SetVolume( 5.0f );
-
-		CreateGrowthBounce();
-
-		m_shapeType = e_boxShape;
-		m_bodyId = b2_nullBodyId;
-		m_enableHitEvents = true;
+		InitializeAudio();
 		Launch();
-	}
-
-	void UpdateGui() override
-	{
-		ImGui::Begin( "Blueprint", nullptr, ImGuiWindowFlags_NoResize );
-
-		const char* shapeTypes[] = { "Circle", "Capsule", "Box" };
-		int shapeType = static_cast<int>( m_shapeType );
-		if ( ImGui::Combo( "Shape", &shapeType, shapeTypes, IM_ARRAYSIZE( shapeTypes ) ) )
-		{
-			m_shapeType = static_cast<ShapeType>( shapeType );
-			Launch();
-		}
-		if ( ImGui::Checkbox( "Fixed Rotation", &m_fixedRotation ) )
-			Launch();
-		if ( ImGui::Checkbox( "Hit Events", &m_enableHitEvents ) )
-			b2Body_EnableHitEvents( m_bodyId, m_enableHitEvents );
-
-		ImGui::Spacing();
-		ImGui::Text( "Effects:" );
-		ImGui::Checkbox( "Enable Screen Shake", &m_enableScreenShake );
-
-		const char* aspectRatios[] = { "16:9", "9:16", "1:1" };
-		int aspectIndex = static_cast<int>( m_aspectRatio );
-		if ( ImGui::Combo( "Aspect Ratio", &aspectIndex, aspectRatios, IM_ARRAYSIZE( aspectRatios ) ) )
-		{
-			m_aspectRatio = static_cast<AspectRatio>( aspectIndex );
-			CreateGrowthBounce();
-		}
-
-		ImGui::End();
 	}
 
 	void Step() override
 	{
 		Sample::Step();
-		b2ContactEvents events = b2World_GetContactEvents( m_worldId );
 
-		for ( int i = 0; i < events.hitCount; ++i )
+		if ( m_enableHitEvents )
 		{
-			b2ContactHitEvent* event = events.hitEvents + i;
-			// APPEL SYSTÉMATIQUE, AudioManager s’occupe du filtrage
-			HandleHitEffects( event->point, event->approachSpeed );
-
-			// Mémorise les 4 derniers impacts pour affichage visuel
-			HitEvent* e = &m_hitEvents[0];
-			for ( int j = 1; j < 4; ++j )
+			b2ContactEvents events = b2World_GetContactEvents( m_worldId );
+			for ( int i = 0; i < events.hitCount; ++i )
 			{
-				if ( m_hitEvents[j].stepIndex < e->stepIndex )
-					e = &m_hitEvents[j];
+				m_audioManager.HandleHitEffect( events.hitEvents[i].point, events.hitEvents[i].approachSpeed, m_stepCount );
+				GrowBody();
+				if ( m_enableScreenShake )
+				{
+					shakeDuration = 15;
+					shakeIntensity = 0.3f;
+				}
 			}
-			e->point = event->point;
-			e->speed = event->approachSpeed;
-			e->stepIndex = m_stepCount;
 		}
 
-		for ( const HitEvent& e : m_hitEvents )
-		{
-			if ( e.stepIndex > 0 && m_stepCount <= e.stepIndex + 30 )
-				m_context->draw.DrawString( e.point, "%.1f", e.speed );
-		}
+		m_audioManager.PlayQueued();
+		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
 
 		ApplyShakeEffect();
-		m_audioManager.PlayQueued();
+
+		// Animation du motor joint (tous les ShapeType)
+		if ( B2_IS_NON_NULL( m_motorJointId ) )
+		{
+			float t = m_stepCount * 0.03f;
+			b2Transform xf;
+			xf.p = { 0.0f, 0.0f }; // cible statique
+			xf.q = b2MakeRot( t ); // fait tourner la forme
+			b2Joint_SetLocalFrameA( m_motorJointId, xf );
+		}
 
 		spawnTimer++;
 		if ( spawnTimer >= spawnInterval )
@@ -2718,16 +2668,59 @@ public:
 		}
 	}
 
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+		ImVec2 center = ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f );
+
+		ImGui::SetNextWindowPos( center, ImGuiCond_Always, ImVec2( 0.5f, 0.5f ) );
+		ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
+
+		ImGui::Begin( "MetamorphicBounce Settings" );
+
+		const char* shapeNames[] = { "Circle", "Capsule", "Box" };
+		int shapeIndex = static_cast<int>( m_shapeType );
+		if ( ImGui::Combo( "Shape Type", &shapeIndex, shapeNames, IM_ARRAYSIZE( shapeNames ) ) )
+		{
+			m_shapeType = static_cast<ShapeType>( shapeIndex );
+			Launch();
+		}
+		if ( ImGui::Checkbox( "Fixed Rotation", &m_fixedRotation ) )
+			Launch();
+
+		if ( ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents ) )
+			b2Body_EnableHitEvents( m_bodyId, m_enableHitEvents );
+
+		ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 1.0f, "%.2f" );
+		ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.0f, "%.2f" );
+		ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
+
+		if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.1f%%" ) )
+			m_audioManager.SetVolume( m_soundVolume );
+
+		ImGui::Checkbox( "Enable Screen Shake", &m_enableScreenShake );
+
+		ImGui::End();
+	}
+
 private:
-	std::array<HitEvent, 4> m_hitEvents;
-	b2BodyId m_bodyId;
+	AudioManager m_audioManager;
+	float m_soundVolume;
+
 	ShapeType m_shapeType;
 	bool m_enableHitEvents;
 	bool m_fixedRotation;
 	bool m_enableScreenShake;
 
+	b2BodyId m_bodyId = b2_nullBodyId;
 	b2BodyId m_wallBodyId = b2_nullBodyId;
-	AudioManager m_audioManager;
+
+	b2BodyId m_anchorId = b2_nullBodyId;
+	b2JointId m_motorJointId = b2_nullJointId;
+
+	float m_shapeSize = 0.40f;
+	float m_restitution = 1.0f;
+	float m_friction = 0.0f;
 
 	int shakeDuration;
 	float shakeIntensity;
@@ -2736,32 +2729,134 @@ private:
 	int spawnTimer;
 	int spawnInterval;
 
-	std::vector<uint32_t> shapeColors = { 0x4B0082, 0xFFFFF0, 0xF0E68C };
-
-	void CreateGrowthBounce()
+	void InitializeAudio()
 	{
-		if ( B2_IS_NON_NULL( m_wallBodyId ) )
+		std::filesystem::path path = "data/audio/xp";
+		if ( !std::filesystem::exists( path ) )
+			path = "D:/Sound & Fx/audio/minecraft/xp";
+		m_audioManager.LoadFromDirectory( path.string() );
+		m_audioManager.SetVolume( m_soundVolume );
+	}
+
+	void Launch()
+	{
+		// Détruit l'ancien body si besoin
+		if ( B2_IS_NON_NULL( m_bodyId ) )
+			b2DestroyBody( m_bodyId );
+
+		// Détruit anchor/joint motorisés si besoin (reset propre)
+		if ( B2_IS_NON_NULL( m_motorJointId ) )
 		{
-			b2DestroyBody( m_wallBodyId );
-			m_wallBodyId = b2_nullBodyId;
+			b2DestroyJoint( m_motorJointId );
+			m_motorJointId = b2_nullJointId;
 		}
-		b2BodyDef bodyDef = b2DefaultBodyDef();
-		m_wallBodyId = b2CreateBody( m_worldId, &bodyDef );
-		float width = 9.0f, height = 9.0f;
-		switch ( m_aspectRatio )
+		if ( B2_IS_NON_NULL( m_anchorId ) )
 		{
-			case AspectRatio::Ratio_16_9:
-				height = 9.0f;
-				width = height * ( 16.0f / 9.0f );
-				break;
-			case AspectRatio::Ratio_9_16:
-				width = 9.0f;
-				height = width * ( 16.0f / 9.0f );
-				break;
-			default:
-				width = 9.0f;
-				height = 9.0f;
-				break;
+			b2DestroyBody( m_anchorId );
+			m_anchorId = b2_nullBodyId;
+		}
+
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		bodyDef.type = b2_dynamicBody;
+		bodyDef.isBullet = true;
+		bodyDef.linearVelocity = { 0.0f, 0.0f };
+		bodyDef.position = { 0.0f, 0.0f };
+		bodyDef.gravityScale = 0.0f;
+		bodyDef.motionLocks.angularZ = m_fixedRotation;
+		m_bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.material = b2DefaultSurfaceMaterial();
+		shapeDef.material.restitution = m_restitution;
+		shapeDef.material.friction = m_friction;
+		shapeDef.enableHitEvents = m_enableHitEvents;
+		shapeDef.material.customColor = 0x4B0082;
+
+		// Création de la forme choisie
+		if ( m_shapeType == e_circleShape )
+		{
+			b2Circle circle = { { 0.0f, 0.0f }, m_shapeSize };
+			b2CreateCircleShape( m_bodyId, &shapeDef, &circle );
+		}
+		else if ( m_shapeType == e_capsuleShape )
+		{
+			b2Capsule capsule = { { -m_shapeSize, 0.0f }, { m_shapeSize, 0.0f }, m_shapeSize * 0.5f };
+			b2CreateCapsuleShape( m_bodyId, &shapeDef, &capsule );
+		}
+		else // box
+		{
+			b2Polygon box = b2MakeBox( m_shapeSize, m_shapeSize );
+			b2CreatePolygonShape( m_bodyId, &shapeDef, &box );
+		}
+
+		// Toujours un motor joint (quel que soit le type)
+		b2BodyDef anchorDef = b2DefaultBodyDef();
+		anchorDef.position = { 0.0f, 0.0f };
+		m_anchorId = b2CreateBody( m_worldId, &anchorDef );
+
+		b2MotorJointDef jointDef = b2DefaultMotorJointDef();
+		jointDef.base.bodyIdA = m_anchorId;
+		jointDef.base.bodyIdB = m_bodyId;
+		jointDef.maxForce = 500.0f;
+		jointDef.maxTorque = 1000.0f;
+		jointDef.correctionFactor = 1.0f;
+		m_motorJointId = b2CreateMotorJoint( m_worldId, &jointDef );
+	}
+
+	void GrowBody()
+	{
+		if ( B2_IS_NON_NULL( m_bodyId ) )
+		{
+			b2ShapeId shapes[10];
+			int count = b2Body_GetShapes( m_bodyId, shapes, 10 );
+			if ( count > 0 )
+			{
+				b2ShapeId shapeId = shapes[0];
+				if ( m_shapeType == e_circleShape )
+				{
+					b2Circle circle = b2Shape_GetCircle( shapeId );
+					circle.radius *= 1.05f;
+					b2Shape_SetCircle( shapeId, &circle );
+				}
+				else if ( m_shapeType == e_capsuleShape )
+				{
+					b2Capsule capsule = b2Shape_GetCapsule( shapeId );
+					capsule.radius *= 1.05f;
+					capsule.center1.x *= 1.05f;
+					capsule.center2.x *= 1.05f;
+					b2Shape_SetCapsule( shapeId, &capsule );
+				}
+				else
+				{
+					b2Polygon box = b2Shape_GetPolygon( shapeId );
+					for ( int j = 0; j < box.count; ++j )
+					{
+						box.vertices[j].x *= 1.05f;
+						box.vertices[j].y *= 1.05f;
+					}
+					b2Shape_SetPolygon( shapeId, &box );
+				}
+				b2Body_ApplyMassFromShapes( m_bodyId );
+			}
+		}
+	}
+
+	void ApplyShakeEffect()
+	{
+		if ( shakeDuration > 0 )
+		{
+			float shakeX = ( static_cast<float>( rand() ) / RAND_MAX - 0.5f ) * shakeIntensity;
+			float shakeY = ( static_cast<float>( rand() ) / RAND_MAX - 0.5f ) * shakeIntensity;
+			m_context->camera.m_center.x = cameraBasePosition.x + shakeX;
+			m_context->camera.m_center.y = cameraBasePosition.y + shakeY;
+			shakeDuration--;
+			shakeIntensity *= 0.9f;
+		}
+		else
+		{
+			float returnSpeed = 0.15f;
+			m_context->camera.m_center.x += ( cameraBasePosition.x - m_context->camera.m_center.x ) * returnSpeed;
+			m_context->camera.m_center.y += ( cameraBasePosition.y - m_context->camera.m_center.y ) * returnSpeed;
 		}
 	}
 
@@ -2786,147 +2881,10 @@ private:
 		b2Circle circle = { { 0.0f, 0.0f }, 0.1f };
 		b2CreateCircleShape( bodyId, &shapeDef, &circle );
 	}
-
-	void Launch()
-	{
-		if ( B2_IS_NON_NULL( m_bodyId ) )
-			b2DestroyBody( m_bodyId );
-
-		b2BodyDef bodyDef = b2DefaultBodyDef();
-		bodyDef.type = b2_dynamicBody;
-		bodyDef.isBullet = true;
-		bodyDef.linearVelocity = { 0.0f, 0.0f };
-		bodyDef.position = { 0.0f, 0.0f };
-		bodyDef.gravityScale = 0.0f;
-		bodyDef.motionLocks.angularZ = false;
-		m_bodyId = b2CreateBody( m_worldId, &bodyDef );
-
-		b2ShapeDef shapeDef = b2DefaultShapeDef();
-		shapeDef.material = b2DefaultSurfaceMaterial();
-		shapeDef.material.restitution = 1.0f;
-		shapeDef.material.friction = 0.0f;
-		shapeDef.enableHitEvents = m_enableHitEvents;
-		shapeDef.material.customColor = shapeColors[static_cast<int>( m_shapeType ) % shapeColors.size()];
-
-		if ( m_shapeType == e_circleShape )
-		{
-			b2Circle circle = { { 0.0f, 0.0f }, 0.325f };
-			b2CreateCircleShape( m_bodyId, &shapeDef, &circle );
-		}
-		else if ( m_shapeType == e_capsuleShape )
-		{
-			b2Capsule capsule = { { -0.350f, 0.0f }, { 0.350f, 0.0f }, 0.1625f };
-			b2CreateCapsuleShape( m_bodyId, &shapeDef, &capsule );
-		}
-		else
-		{
-			float size = 0.40f;
-			b2Polygon box = b2MakeBox( size, size );
-			b2CreatePolygonShape( m_bodyId, &shapeDef, &box );
-		}
-
-		// Création du motor joint (carré du milieu)
-		b2BodyDef groundDef = b2DefaultBodyDef();
-		groundDef.position = { 0.0f, 0.0f };
-		b2BodyId groundBody = b2CreateBody( m_worldId, &groundDef );
-
-		b2MotorJointDef motorJointDef = b2DefaultMotorJointDef();
-
-		motorJointDef.base.bodyIdA = groundBody;
-		motorJointDef.base.bodyIdB = m_bodyId;
-
-		// On utilise directement la frame A pour positionner l'offset :
-		motorJointDef.base.localFrameA.p = { 0.0f, 0.0f };
-
-		motorJointDef.maxForce = 100.0f;
-		motorJointDef.maxTorque = 0.0f;
-
-		b2JointId joint = b2CreateMotorJoint( m_worldId, &motorJointDef );
-	}
-
-	void GrowBody()
-	{
-		if ( B2_IS_NON_NULL( m_bodyId ) )
-		{
-			b2ShapeId shapes[10];
-			int count = b2Body_GetShapes( m_bodyId, shapes, 10 );
-			if ( count > 0 )
-			{
-				b2ShapeId shapeId = shapes[0];
-				if ( m_shapeType == e_circleShape )
-				{
-					b2Circle circle = b2Shape_GetCircle( shapeId );
-					float currentRadius = circle.radius;
-					const float initialRadius = 0.325f;
-					float growthFactor = 1.0f + 0.05f * ( initialRadius / currentRadius );
-					circle.radius *= growthFactor;
-					b2Shape_SetCircle( shapeId, &circle );
-				}
-				else if ( m_shapeType == e_capsuleShape )
-				{
-					b2Capsule capsule = b2Shape_GetCapsule( shapeId );
-					float currentRadius = capsule.radius;
-					const float initialRadius = 0.1625f;
-					float growthFactor = 1.0f + 0.05f * ( initialRadius / currentRadius );
-					capsule.radius *= growthFactor;
-					capsule.center1.x *= growthFactor;
-					capsule.center2.x *= growthFactor;
-					b2Shape_SetCapsule( shapeId, &capsule );
-				}
-				else
-				{
-					b2Polygon box = b2Shape_GetPolygon( shapeId );
-					float currentSize = fabs( box.vertices[0].x );
-					const float initialSize = 0.325f;
-					float growthFactor = 1.0f + 0.05f * ( initialSize / currentSize );
-					for ( int j = 0; j < box.count; ++j )
-					{
-						box.vertices[j].x *= growthFactor;
-						box.vertices[j].y *= growthFactor;
-					}
-					b2Shape_SetPolygon( shapeId, &box );
-				}
-				b2Body_ApplyMassFromShapes( m_bodyId );
-			}
-		}
-	}
-
-	void HandleHitEffects( const b2Vec2& impactPoint, float speed )
-	{
-		cameraBasePosition = m_context->camera.m_center;
-		// N’enregistre rien, délègue tout à l’audio manager !
-		m_audioManager.HandleHitEffect( impactPoint, speed, m_stepCount );
-
-		GrowBody();
-
-		if ( m_enableScreenShake )
-		{
-			shakeDuration = 15;
-			shakeIntensity = 0.3f;
-		}
-	}
-
-	void ApplyShakeEffect()
-	{
-		if ( shakeDuration > 0 )
-		{
-			float shakeX = ( static_cast<float>( rand() ) / RAND_MAX - 0.5f ) * shakeIntensity;
-			float shakeY = ( static_cast<float>( rand() ) / RAND_MAX - 0.5f ) * shakeIntensity;
-			m_context->camera.m_center.x = cameraBasePosition.x + shakeX;
-			m_context->camera.m_center.y = cameraBasePosition.y + shakeY;
-			shakeDuration--;
-			shakeIntensity *= 0.9f;
-		}
-		else
-		{
-			float returnSpeed = 0.15f;
-			m_context->camera.m_center.x += ( cameraBasePosition.x - m_context->camera.m_center.x ) * returnSpeed;
-			m_context->camera.m_center.y += ( cameraBasePosition.y - m_context->camera.m_center.y ) * returnSpeed;
-		}
-	}
 };
 
 static int MetamorphicBounceSample = RegisterSample( "9:16", "Metamorphic Bounce", MetamorphicBounce::Create );
+
 
 class ParticlesBlueprintSample : public Sample
 {
@@ -3043,496 +3001,6 @@ private:
 };
 
 static int sampleParticlesBlueprint = RegisterSample( "9:16", "ParticlesBlueprint", ParticlesBlueprintSample::Create );
-
-class Wichyear : public Sample
-{
-public:
-	static Sample* Create( SampleContext* context )
-	{
-		return new Wichyear( context );
-	}
-
-	enum ShapeType
-	{
-		e_circleShape = 0,
-		e_capsuleShape,
-		e_boxShape,
-		e_polygon3,
-		e_polygon4,
-		e_polygon5,
-		e_polygon6,
-		e_polygon7,
-		e_polygon8
-	};
-
-	// Public config
-	uint32_t m_uniformColor = 0x00FF00; // Lime
-	int m_uniformColorIndex = 0;		// Premier (Lime)
-	bool m_enableDuplication = false;
-
-	struct HitEvent
-	{
-		b2Vec2 point{ 0, 0 };
-		float speed{ 0 };
-		int stepIndex{ -1 };
-	};
-
-	explicit Wichyear( SampleContext* context )
-		: Sample( context )
-		, m_shapeType( e_circleShape )
-		, m_enableHitEvents( true )
-		, m_fixedRotation( false )
-		, m_enableScreenShake( false )
-		, m_enableHitSounds( true )
-		, m_currentSoundIndex( 0 )
-		, lastImpactTime( -5 )
-		, shakeDuration( 0 )
-		, shakeIntensity( 0.0f )
-		, m_destroySoundIndex( 0 )
-	{
-		if ( !m_context->restart )
-		{
-			m_context->camera.m_center = { 0, 0 };
-			m_context->camera.m_zoom = 35.0f; // Zoom-out pour voir tout ce qui est plus gros
-		}
-		b2World_SetGravity( m_worldId, { 0.0f, -20.0f } );
-		for ( auto& e : m_hitEvents )
-			e = HitEvent();
-		InitializeAudio();
-		CreateArena();
-		Launch();
-	}
-
-	void UpdateGui() override
-	{
-		ImGui::SetNextWindowSize( ImVec2( 400, 400 ), ImGuiCond_FirstUseEver );
-		ImGui::Begin( "Blueprint" );
-		const char* shapes[] = { "Circle", "Capsule", "Box", "Triangle", "Quad", "Pentagon", "Hexagon", "Heptagon", "Octagon" };
-		int si = int( m_shapeType );
-		if ( ImGui::Combo( "Shape", &si, shapes, IM_ARRAYSIZE( shapes ) ) )
-		{
-			m_shapeType = ShapeType( si );
-			Launch();
-		}
-		if ( ImGui::Checkbox( "Fixed Rotation", &m_fixedRotation ) )
-			Launch();
-		if ( ImGui::Checkbox( "Hit Events", &m_enableHitEvents ) )
-			b2Body_EnableHitEvents( m_bodyId, m_enableHitEvents );
-		ImGui::Checkbox( "Enable Screen Shake", &m_enableScreenShake );
-		ImGui::Checkbox( "Enable Hit Sounds", &m_enableHitSounds );
-		ImGui::Checkbox( "Enable Duplication", &m_enableDuplication );
-		const char* colors[] = { "Lime", "Magenta", "Orange", "Red", "Yellow" };
-		static uint32_t vals[5] = { 0x00FF00, 0xFF00FF, 0xFFA500, 0xFF0000, 0xFFFF00 };
-		int ci = m_uniformColorIndex;
-		if ( ImGui::Combo( "Uniform Color", &ci, colors, IM_ARRAYSIZE( colors ) ) )
-		{
-			m_uniformColorIndex = ci;
-			m_uniformColor = vals[ci];
-			CreateArena();
-			Launch();
-		}
-		static float vol = 10.0f;
-		if ( ImGui::SliderFloat( "Audio Volume", &vol, 0.0f, 100.0f ) )
-		{
-			m_hitAudio.SetVolume( vol );
-			m_destroyAudio.SetVolume( vol );
-		}
-		ImGui::Text( "Sounds Loaded: %d", int( m_hitAudio.GetSoundCount() ) );
-		ImGui::End();
-
-		ImGuiIO& io = ImGui::GetIO();
-		ImVec2 screenSize = io.DisplaySize;
-
-		ImFont* titleFont = m_context->draw.m_mediumFont ? m_context->draw.m_mediumFont : ImGui::GetFont();
-		ImFont* largeFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
-
-		auto DrawTextOutline = []( ImFont* font, float fontSize, ImVec2 pos, ImU32 color, const char* text ) {
-			for ( int ox = 0; ox <= 3; ++ox )
-				for ( int oy = 0; oy <= 3; ++oy )
-					if ( ox != 0 || oy != 0 )
-						ImGui::GetForegroundDrawList()->AddText( font, fontSize, ImVec2( pos.x + ox, pos.y + oy ), color, text );
-		};
-
-		// --- Ligne 1 : Titre principal ---
-		const char* title = "I will become a billionaire in";
-		ImVec2 titleSize = titleFont->CalcTextSizeA( titleFont->FontSize, FLT_MAX, 0.0f, title );
-		float y = 200.0f;
-		ImVec2 titlePos = ImVec2( ( screenSize.x - titleSize.x ) * 0.5f, y );
-
-		DrawTextOutline( titleFont, titleFont->FontSize, titlePos, IM_COL32( 0, 0, 0, 255 ), title );
-		ImGui::GetForegroundDrawList()->AddText( titleFont, titleFont->FontSize, titlePos, IM_COL32( 255, 255, 255, 255 ),
-												 title );
-
-		// --- Ligne 2 : Année verte ---
-		std::string yearText = std::to_string( m_millionaireYear );
-		ImVec2 yearSize = largeFont->CalcTextSizeA( largeFont->FontSize, FLT_MAX, 0.0f, yearText.c_str() );
-		float yearY = y + titleSize.y + 10.0f;
-		ImVec2 yearPos = ImVec2( ( screenSize.x - yearSize.x ) * 0.5f, yearY );
-
-		DrawTextOutline( largeFont, largeFont->FontSize, yearPos, IM_COL32( 0, 0, 0, 255 ), yearText.c_str() );
-		ImGui::GetForegroundDrawList()->AddText( largeFont, largeFont->FontSize, yearPos, IM_COL32( 57, 255, 20, 255 ),
-												 yearText.c_str() );
-
-		// --- Ligne 3 : When will you? ---
-		const char* sub = "When will you?";
-		ImVec2 subSize = titleFont->CalcTextSizeA( titleFont->FontSize, FLT_MAX, 0.0f, sub );
-		float subY = yearY + yearSize.y + 12.0f; // espace en dessous de l'année
-		ImVec2 subPos = ImVec2( ( screenSize.x - subSize.x ) * 0.5f, subY );
-
-		DrawTextOutline( titleFont, titleFont->FontSize, subPos, IM_COL32( 0, 0, 0, 255 ), sub );
-		ImGui::GetForegroundDrawList()->AddText( titleFont, titleFont->FontSize, subPos, IM_COL32( 255, 255, 255, 255 ), sub );
-	}
-
-	void Step() override
-	{
-		Sample::Step();
-
-		b2ContactEvents contactEvents = b2World_GetContactEvents( m_worldId );
-		for ( int i = 0; i < contactEvents.hitCount; ++i )
-		{
-			const b2ContactHitEvent& ev = contactEvents.hitEvents[i];
-
-			// Impact cooldown (frames)
-			if ( m_stepCount - lastImpactTime < MIN_STEPS_BETWEEN_IMPACTS )
-				continue;
-
-			// Check distance from last impact
-			b2Vec2 d = ev.point - lastImpactPosition;
-			if ( b2LengthSquared( d ) < MIN_DISTANCE_BETWEEN_IMPACTS * MIN_DISTANCE_BETWEEN_IMPACTS )
-				continue;
-
-			HandleHitEffects( ev.point );
-
-			// Store impact in oldest slot
-			HitEvent* slot = &m_hitEvents[0];
-			for ( int j = 1; j < m_hitEvents.size(); ++j )
-				if ( m_hitEvents[j].stepIndex < slot->stepIndex )
-					slot = &m_hitEvents[j];
-			slot->point = ev.point;
-			slot->speed = ev.approachSpeed;
-			slot->stepIndex = m_stepCount;
-			++m_millionaireYear;
-
-			if ( m_enableDuplication )
-				DuplicateAt( ev.point );
-		}
-
-		// Display recent impacts (bigger radius)
-		for ( auto& e : m_hitEvents )
-			if ( e.stepIndex > 0 && m_stepCount <= e.stepIndex + 30 )
-				m_context->draw.DrawCircle( e.point, 1.0f, b2_colorOrangeRed ),
-					m_context->draw.DrawString( e.point, "%.1f", e.speed );
-
-		if ( m_enableScreenShake )
-			ApplyShakeEffect();
-
-		m_hitAudio.PlayQueued();
-	}
-
-	void DuplicateAt( const b2Vec2& position )
-	{
-		// --- Official naming & big shapes ---
-		b2BodyDef bodyDef = b2DefaultBodyDef();
-		bodyDef.type = b2_dynamicBody;
-		bodyDef.position = position;
-		bodyDef.linearVelocity = { 10.0f, 0.0f }; // plus rapide, plus gros effet
-		bodyDef.gravityScale = 0.0f;
-		bodyDef.motionLocks.angularZ = false;
-		bodyDef.isBullet = true;
-
-		b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
-
-		b2ShapeDef shapeDef = b2DefaultShapeDef();
-		shapeDef.density = 1.0f;
-		shapeDef.enableHitEvents = true;
-		shapeDef.material = b2DefaultSurfaceMaterial();
-		shapeDef.material.restitution = 0.5f;
-		shapeDef.material.friction = 0.05f; // un peu de friction, sinon "explosion"
-		shapeDef.material.customColor = m_uniformColor;
-
-		const float RADIUS = 1.0f; // rayon plus grand
-
-		if ( m_shapeType == e_circleShape )
-		{
-			b2Circle circle = { { 0.0f, 0.0f }, RADIUS };
-			b2CreateCircleShape( bodyId, &shapeDef, &circle );
-		}
-		else if ( m_shapeType == e_capsuleShape )
-		{
-			b2Capsule capsule = { { -RADIUS, 0.0f }, { RADIUS, 0.0f }, RADIUS * 0.5f };
-			b2CreateCapsuleShape( bodyId, &shapeDef, &capsule );
-		}
-		else if ( m_shapeType == e_boxShape )
-		{
-			b2Polygon box = b2MakeBox( RADIUS, RADIUS );
-			b2CreatePolygonShape( bodyId, &shapeDef, &box );
-		}
-		else
-		{
-			int sides = int( m_shapeType ) - int( e_polygon3 ) + 3;
-			std::vector<b2Vec2> vertices( sides );
-			const float twoPi = 2.0f * b2_pi;
-			for ( int i = 0; i < sides; ++i )
-				vertices[i] = { std::cos( i * twoPi / sides ) * RADIUS, std::sin( i * twoPi / sides ) * RADIUS };
-
-			b2Hull hull = b2ComputeHull( vertices.data(), sides );
-			if ( hull.count > 0 )
-			{
-				b2Polygon polygon = b2MakePolygon( &hull, 0 );
-				b2CreatePolygonShape( bodyId, &shapeDef, &polygon );
-			}
-		}
-	}
-
-private:
-	// Physics & rendering
-	b2BodyId m_bodyId{ b2_nullBodyId };
-	ShapeType m_shapeType;
-	bool m_enableHitEvents;
-	bool m_fixedRotation;
-	bool m_enableScreenShake;
-
-	// Arena/walls
-	b2BodyId m_wallBodyId{ b2_nullBodyId };
-
-	// Hit storage
-	std::array<HitEvent, 10> m_hitEvents;
-	b2Vec2 lastImpactPosition{ 0, 0 };
-	int lastImpactTime;
-	static constexpr float MIN_DISTANCE_BETWEEN_IMPACTS = 0.5f; // plus large pour tout voir
-	static constexpr int MIN_STEPS_BETWEEN_IMPACTS = 2;
-
-	// Screen shake
-	int shakeDuration;
-	float shakeIntensity;
-	b2Vec2 cameraBasePosition{ 0, 0 };
-
-	// Audio
-	bool m_enableHitSounds = true;
-	AudioManager m_hitAudio;
-	AudioManager m_destroyAudio;
-	size_t m_currentSoundIndex = 0;
-	size_t m_destroySoundIndex = 0;
-
-	// Arena dimensions (bigger)
-	static constexpr float ARENA_HALF_WIDTH = 12.5f;
-	static constexpr float ARENA_HALF_HEIGHT = 12.5f;
-	static constexpr float WALL_THICKNESS = 0.5f;
-
-	int m_millionaireYear = 2025; // ou 2026, comme tu veux
-
-	std::mt19937 m_rng{ std::random_device{}() };
-	std::uniform_real_distribution<float> m_velDist{ -10.0f, 10.0f };
-
-	float m_holeX = 0.0f;
-	float m_holeWidth = 2.5f;
-
-	void CreateArena()
-	{
-		// 1. Détruire le body précédent si nécessaire
-		if ( B2_IS_NON_NULL( m_wallBodyId ) )
-		{
-			b2DestroyBody( m_wallBodyId );
-		}
-
-		b2BodyDef bodyDef = b2DefaultBodyDef();
-		m_wallBodyId = b2CreateBody( m_worldId, &bodyDef );
-
-		b2ShapeDef shapeDef = b2DefaultShapeDef();
-		shapeDef.enableHitEvents = true;
-		shapeDef.material = b2DefaultSurfaceMaterial();
-		shapeDef.material.restitution = 1.0f;
-		shapeDef.material.friction = 0.0f;
-		shapeDef.material.customColor = m_uniformColor;
-
-		const float hw = ARENA_HALF_WIDTH;	// demi-largeur
-		const float hh = ARENA_HALF_HEIGHT; // demi-hauteur
-		const float t = WALL_THICKNESS;		// épaisseur
-		const float halfT = t * 0.5f;
-
-		const float xMin = -hw;
-		const float xMax = +hw;
-		const float yMin = -hh;
-		const float yMax = +hh;
-
-		// 2. Murs latéraux (verticaux)
-		{
-			float h = yMax - yMin;
-			float cy = yMin + h * 0.5f;
-
-			// Left
-			{
-				float cx = xMin + halfT;
-				b2Polygon box = b2MakeOffsetBox( halfT, h * 0.5f, { cx, cy }, b2MakeRot( 0 ) );
-				b2CreatePolygonShape( m_wallBodyId, &shapeDef, &box );
-			}
-			// Right
-			{
-				float cx = xMax - halfT;
-				b2Polygon box = b2MakeOffsetBox( halfT, h * 0.5f, { cx, cy }, b2MakeRot( 0 ) );
-				b2CreatePolygonShape( m_wallBodyId, &shapeDef, &box );
-			}
-		}
-
-		// 3. Mur du haut (horizontal)
-		{
-			float w = xMax - xMin;
-			float cx = xMin + w * 0.5f;
-			float cy = yMax - halfT;
-			b2Polygon box = b2MakeOffsetBox( w * 0.5f, halfT, { cx, cy }, b2MakeRot( 0 ) );
-			b2CreatePolygonShape( m_wallBodyId, &shapeDef, &box );
-		}
-
-		// 4. Murs du bas (inclinés, pivots sur les coins)
-		float angleLeft = -25.0f * b2_pi / 180.0f;	// -25°
-		float angleRight = +25.0f * b2_pi / 180.0f; // +25°
-		const float wallLen = hw * 0.97f;			// 1.1x pour que ça se croise bien au centre
-		const float halfLen = wallLen * 0.5f;
-
-		// Mur bas gauche - pivot au coin bas gauche
-		{
-			b2Vec2 origin = { xMin, yMin };
-			b2Rot rot = b2MakeRot( angleLeft );
-			b2Vec2 offset = { rot.c * halfLen - rot.s * halfT, rot.s * halfLen + rot.c * halfT };
-			b2Vec2 center = { origin.x + offset.x, origin.y + offset.y };
-			b2Polygon box = b2MakeOffsetBox( halfLen, halfT, center, rot );
-			b2CreatePolygonShape( m_wallBodyId, &shapeDef, &box );
-		}
-
-		// Mur bas droit - pivot au coin bas droit
-		{
-			b2Vec2 origin = { xMax, yMin };
-			b2Rot rot = b2MakeRot( angleRight );
-			b2Vec2 offset = { -rot.c * halfLen - rot.s * halfT, -rot.s * halfLen + rot.c * halfT };
-			b2Vec2 center = { origin.x + offset.x, origin.y + offset.y };
-			b2Polygon box = b2MakeOffsetBox( halfLen, halfT, center, rot );
-			b2CreatePolygonShape( m_wallBodyId, &shapeDef, &box );
-		}
-	}
-
-	// Launch dynamic body (big version)
-	void Launch()
-	{
-		if ( B2_IS_NON_NULL( m_bodyId ) )
-			b2DestroyBody( m_bodyId );
-
-		b2BodyDef bodyDef = b2DefaultBodyDef();
-		bodyDef.type = b2_dynamicBody;
-		bodyDef.isBullet = true;
-		bodyDef.linearVelocity = { m_velDist( m_rng ), m_velDist( m_rng ) };
-		bodyDef.position = { 0, 0 };
-		bodyDef.gravityScale = 1.0f;
-		bodyDef.motionLocks.angularZ = false;
-		m_bodyId = b2CreateBody( m_worldId, &bodyDef );
-
-		b2ShapeDef shapeDef = b2DefaultShapeDef();
-		shapeDef.density = 1.0f;
-		shapeDef.enableHitEvents = m_enableHitEvents;
-		shapeDef.material = b2DefaultSurfaceMaterial();
-		shapeDef.material.restitution = 1.0f;
-		shapeDef.material.friction = 0.05f;
-		shapeDef.material.customColor = m_uniformColor;
-
-		const float RADIUS = 1.0f;
-		if ( m_shapeType == e_circleShape )
-		{
-			b2Circle c = { { 0, 0 }, RADIUS };
-			b2CreateCircleShape( m_bodyId, &shapeDef, &c );
-		}
-		else if ( m_shapeType == e_capsuleShape )
-		{
-			b2Capsule c = { { -RADIUS, 0 }, { RADIUS, 0 }, RADIUS * 0.5f };
-			b2CreateCapsuleShape( m_bodyId, &shapeDef, &c );
-		}
-		else if ( m_shapeType == e_boxShape )
-		{
-			b2Polygon p = b2MakeBox( RADIUS, RADIUS );
-			b2CreatePolygonShape( m_bodyId, &shapeDef, &p );
-		}
-		else
-		{
-			int sides = int( m_shapeType ) - int( e_polygon3 ) + 3;
-			std::vector<b2Vec2> verts( sides );
-			float twoPi = 2.0f * b2_pi;
-			for ( int i = 0; i < sides; i++ )
-				verts[i] = { std::cos( i * twoPi / sides ) * RADIUS, std::sin( i * twoPi / sides ) * RADIUS };
-			b2Hull h = b2ComputeHull( verts.data(), sides );
-			if ( h.count > 0 )
-			{
-				b2Polygon pp = b2MakePolygon( &h, 0 );
-				b2CreatePolygonShape( m_bodyId, &shapeDef, &pp );
-			}
-		}
-	}
-
-	void HandleHitEffects( const b2Vec2& pt )
-	{
-		cameraBasePosition = m_context->camera.m_center;
-		lastImpactPosition = pt;
-		lastImpactTime = m_stepCount;
-		if ( m_enableHitSounds && m_hitAudio.GetSoundCount() > 0 )
-		{
-			m_hitAudio.QueueSound( m_currentSoundIndex );
-			m_currentSoundIndex = ( m_currentSoundIndex + 1 ) % m_hitAudio.GetSoundCount();
-		}
-		if ( m_enableScreenShake )
-		{
-			shakeDuration = 15;
-			shakeIntensity = 0.3f;
-		}
-	}
-
-	void InitializeAudio()
-	{
-		m_hitAudio.LoadFromDirectory( "D:/Sound & Fx/audio/glo" );
-		m_destroyAudio.LoadFromDirectory( "D:/Sound & Fx/audio/glo" );
-		m_hitAudio.SetVolume( 10.0f );
-		m_destroyAudio.SetVolume( 10.0f );
-	}
-
-	void DrawRecentHitEvents()
-	{
-		for ( const auto& e : m_hitEvents )
-			if ( e.stepIndex > 0 && m_stepCount <= e.stepIndex + 30 )
-				m_context->draw.DrawCircle( e.point, 1.0f, b2_colorAntiqueWhite ),
-					m_context->draw.DrawString( e.point, "%.1f", e.speed );
-	}
-
-	void PlayDestroySound()
-	{
-		m_destroyAudio.PlayImmediate( m_destroySoundIndex );
-		m_destroySoundIndex = ( m_destroySoundIndex + 1 ) % m_destroyAudio.GetSoundCount();
-	}
-
-	void ApplyShakeEffect()
-	{
-		if ( shakeDuration > 0 )
-		{
-			float sx = ( rand() / float( RAND_MAX ) - 0.5f ) * shakeIntensity;
-			float sy = ( rand() / float( RAND_MAX ) - 0.5f ) * shakeIntensity;
-			m_context->camera.m_center.x = cameraBasePosition.x + sx;
-			m_context->camera.m_center.y = cameraBasePosition.y + sy;
-			--shakeDuration;
-			shakeIntensity *= 0.9f;
-		}
-		else
-		{
-			const float T = 0.01f, R = 0.15f;
-			if ( std::abs( m_context->camera.m_center.x - cameraBasePosition.x ) < T &&
-				 std::abs( m_context->camera.m_center.y - cameraBasePosition.y ) < T )
-			{
-				m_context->camera.m_center = cameraBasePosition;
-			}
-			else
-			{
-				m_context->camera.m_center.x += ( cameraBasePosition.x - m_context->camera.m_center.x ) * R;
-				m_context->camera.m_center.y += ( cameraBasePosition.y - m_context->camera.m_center.y ) * R;
-			}
-		}
-	}
-};
-
-static int WichyearSample = RegisterSample( "9:16", "Wichyear", Wichyear::Create );
 
 class Verticalquestions : public Sample
 {
@@ -4575,954 +4043,6 @@ private:
 
 static int sampleBluePrintSample = RegisterSample( "9:16", "BluePrintSample", BluePrintSample::Create );
 
-class RotatingRingEscape : public Sample
-{
-public:
-
-
-	struct CageHoleSensorData
-	{
-		int cageIndex;
-		b2BodyId cageBody;
-	};
-	static Sample* Create( SampleContext* context )
-	{
-		return new RotatingRingEscape( context );
-	}
-
-	enum ShapeType
-	{
-		e_circleShape = 0,
-		e_capsuleShape,
-		e_boxShape,
-		e_polygon3,
-		e_polygon4,
-		e_polygon5,
-		e_polygon6,
-		e_polygon7,
-		e_polygon8
-	};
-
-	explicit RotatingRingEscape( SampleContext* context )
-		: Sample( context )
-		, m_shapeType( e_boxShape )
-		, m_enableHitEvents( true )
-		, m_soundVolume( 50.0f )
-		, m_linearDamping( 0.0f )
-		, m_angularDamping( 0.0f )
-		, m_gravityScale( 1.0f )
-		, m_isBullet( false )
-		, m_gravity{ 0.0f, -10.0f }
-		, m_motionLocks{ false, false, false }
-	{
-		if ( !m_context->restart )
-		{
-			m_context->camera.m_center = { 0.0f, 0.0f };
-			m_context->camera.m_zoom = 20.0f;
-		}
-		b2World_SetGravity( m_worldId, m_gravity );
-		InitializeAudio();
-
-		CreateBodies();
-	}
-
-	void Step() override
-	{
-		Sample::Step();
-
-		b2SensorEvents sensorEvents = b2World_GetSensorEvents( m_worldId );
-
-		// --- Marquer les cages à détruire ---
-		std::set<b2BodyId> cagesToDestroy;
-
-		for ( int i = 0; i < sensorEvents.beginCount; ++i )
-		{
-			b2SensorBeginTouchEvent* event = sensorEvents.beginEvents + i;
-
-			// On traite uniquement les sensors "trou de cage"
-			auto* data = static_cast<CageHoleSensorData*>( b2Shape_GetUserData( event->sensorShapeId ) );
-			if ( data )
-			{
-				b2BodyId visitorBody = b2Shape_GetBody( event->visitorShapeId );
-
-				// FILTRE : seules les bodies dynamiques de la grille peuvent détruire la cage
-				auto it = std::find_if( m_bodies.begin(), m_bodies.end(),
-										[visitorBody]( const b2BodyId& id ) { return B2_ID_EQUALS( id, visitorBody ); } );
-				if ( it != m_bodies.end() )
-				{
-					cagesToDestroy.insert( data->cageBody );
-				}
-			}
-
-			// Coloration lime des shapes dynamiques traversant le sensor (facultatif)
-			if ( b2Shape_IsValid( event->visitorShapeId ) )
-			{
-				b2SurfaceMaterial material = b2Shape_GetSurfaceMaterial( event->visitorShapeId );
-				material.customColor = b2_colorLime;
-				b2Shape_SetSurfaceMaterial( event->visitorShapeId, material );
-			}
-		}
-
-		// Remet la couleur à zéro quand on quitte le sensor
-		for ( int i = 0; i < sensorEvents.endCount; ++i )
-		{
-			b2SensorEndTouchEvent* event = sensorEvents.endEvents + i;
-			if ( b2Shape_IsValid( event->visitorShapeId ) )
-			{
-				b2SurfaceMaterial material = b2Shape_GetSurfaceMaterial( event->visitorShapeId );
-				material.customColor = 0;
-				b2Shape_SetSurfaceMaterial( event->visitorShapeId, material );
-			}
-		}
-
-		// --- Détruire les cages marquées ---
-		for ( b2BodyId cageId : cagesToDestroy )
-		{
-			if ( B2_IS_NON_NULL( cageId ) )
-			{
-				b2DestroyBody( cageId );
-
-				// Nettoyage du vector m_cageBodies
-				auto it = std::find_if( m_cageBodies.begin(), m_cageBodies.end(),
-										[cageId]( const b2BodyId& id ) { return B2_ID_EQUALS( id, cageId ); } );
-				if ( it != m_cageBodies.end() )
-					m_cageBodies.erase( it );
-			}
-		}
-
-		// --- reste de Step inchangé ---
-		if ( m_enableHitEvents )
-		{
-			b2ContactEvents events = b2World_GetContactEvents( m_worldId );
-			for ( int i = 0; i < events.hitCount; ++i )
-			{
-				m_audioManager.HandleHitEffect( events.hitEvents[i].point, events.hitEvents[i].approachSpeed, m_stepCount );
-			}
-		}
-
-		m_audioManager.PlayQueued();
-		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
-	}
-
-	void UpdateGui() override
-	{
-		ImGuiIO& io = ImGui::GetIO();
-		ImVec2 center = ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f );
-
-		ImGui::SetNextWindowPos( center, ImGuiCond_Always, ImVec2( 0.5f, 0.5f ) );
-		ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
-
-		ImGui::Begin( "BluePrint Settings" );
-
-		// --- Sélection du type de forme ---
-		const char* shapeNames[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
-									 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
-		int shapeIndex = static_cast<int>( m_shapeType );
-		if ( ImGui::Combo( "Shape Type", &shapeIndex, shapeNames, IM_ARRAYSIZE( shapeNames ) ) )
-		{
-			m_shapeType = static_cast<ShapeType>( shapeIndex );
-			CreateBodies();
-		}
-		if ( ImGui::SliderInt( "Shape Count", &m_shapeCount, 1, 50 ) )
-			CreateBodies();
-		ImGui::Text( "Locks:" );
-		bool changed = false;
-		changed |= ImGui::Checkbox( "Lock X", &m_motionLocks.linearX );
-		ImGui::SameLine();
-		changed |= ImGui::Checkbox( "Lock Y", &m_motionLocks.linearY );
-		ImGui::SameLine();
-		changed |= ImGui::Checkbox( "Lock Rotation (Z)", &m_motionLocks.angularZ );
-
-		if ( changed )
-			CreateBodies(); // ou Launch() ou ce qui va bien
-
-		if ( ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f" ) )
-			CreateBodies();
-		if ( ImGui::SliderFloat( "Spacing", &m_spacing, 0.5f, 5.0f, "%.2f" ) )
-			CreateBodies();
-
-		// --- Paramètres physiques sliders ---
-		bool needUpdateBodies = false;
-		needUpdateBodies |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.5f, "%.2f" );
-		needUpdateBodies |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
-		needUpdateBodies |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
-		needUpdateBodies |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
-		needUpdateBodies |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f" );
-		needUpdateBodies |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
-		needUpdateBodies |= ImGui::Checkbox( "Bullet", &m_isBullet );
-
-		if ( needUpdateBodies )
-			CreateBodies();
-
-		// Contrôle du volume sonore
-		if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.1f%%" ) )
-			m_audioManager.SetVolume( m_soundVolume );
-
-		ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents );
-
-		// --- Bloc gravité ---
-		static const char* gravityPresets[] = { "Terre", "Lune", "Mars", "0", "Reverse", "Max" };
-		static float presetValues[] = { -10.0f, -1.62f, -3.71f, 0.0f, 10.0f, -980.0f }; // -980 = ~100g
-		static int presetIdx = 0;
-
-		if ( ImGui::Combo( "Gravity Preset", &presetIdx, gravityPresets, IM_ARRAYSIZE( gravityPresets ) ) )
-		{
-			m_gravity = { 0.0f, presetValues[presetIdx] };
-			b2World_SetGravity( m_worldId, m_gravity );
-			// Optionnel : tu peux mettre à jour les bodies si nécessaire ici :
-			// CreateBodies();
-		}
-
-		ImGui::Text( "Preset: %s", gravityPresets[presetIdx] );
-
-		ImGui::Separator();
-		ImGui::Text( "Cages settings" );
-		bool updateCages = false;
-		updateCages |= ImGui::SliderInt( "Nombre de cages", &m_cageCount, 1, 30 );
-		updateCages |= ImGui::SliderInt( "Segments par cage", &m_cageSegments, 4, 128 );
-		updateCages |= ImGui::SliderFloat( "Espacement cages", &m_cageSpacing, 0.05f, 5.0f, "%.2f" );
-		updateCages |= ImGui::SliderFloat( "Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f" );
-		updateCages |= ImGui::SliderFloat( "Angle du trou (deg)", &m_holeAngle, 0.0f, 180.0f, "%.1f" );
-		updateCages |= ImGui::SliderFloat( "Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
-		if ( updateCages )
-			CreateBodies();
-		ImGui::End();
-	}
-
-private:
-	// --- Audio ---
-	AudioManager m_audioManager;
-	float m_soundVolume;
-
-	// --- Physics ---
-	ShapeType m_shapeType;
-	bool m_enableHitEvents;
-	b2MotionLocks m_motionLocks;
-	b2Vec2 m_gravity;
-
-	float m_linearDamping;
-	float m_angularDamping;
-	float m_gravityScale;
-	bool m_isBullet;
-
-	float m_restitution = 1.0f;
-	float m_friction = 0.0f;
-	float m_density = 1.0f;
-	float m_shapeSize = 2.0f;
-	float m_spacing = 1.0f;
-
-	// --- Shapes ---
-	std::vector<b2BodyId> m_bodies;
-	int m_shapeCount = 1;
-
-	// --- Cages imbriquées ---
-	int m_cageCount = 30;
-	float m_cageSpacing = 0.05f;
-	float m_cageThickness = 1.3f;
-	float m_holeAngle = 45.0f;			// en degrés
-	std::vector<b2BodyId> m_cageBodies; // Pour suivre/détruire les cages
-	float m_cageMotorSpeed = 0.5f;		// en radians/seconde
-	int m_cageSegments = 32;			// valeur par défaut, typiquement entre 12 et 64
-
-	// --- Catégories collision ---
-	static constexpr uint16_t CATEGORY_SHAPE = 0x0002;
-	static constexpr uint16_t CATEGORY_SENSOR = 0x0004;
-	static constexpr uint16_t CATEGORY_CAGE = 0x0008;
-
-	uint32_t ComputeEllipticColor( int ix, int iy, int cols, int rows )
-	{
-		float cx = ( cols - 1 ) * 0.5f;
-		float cy = ( rows - 1 ) * 0.5f;
-		float dx = static_cast<float>( ix ) - cx;
-		float dy = static_cast<float>( iy ) - cy;
-		float a = std::max( cx, 1.0f );
-		float b = std::max( cy, 1.0f );
-		float r = std::sqrt( ( dx * dx ) / ( a * a ) + ( dy * dy ) / ( b * b ) );
-		r = std::clamp( r / std::sqrt( 2.0f ), 0.0f, 1.0f );
-		float hue = r;
-		return HSVtoRGB( hue, 0.75f, 1.0f );
-	}
-
-	uint32_t HSVtoRGB( float h, float s, float v )
-	{
-		float r, g, b;
-		int i = int( h * 6.0f );
-		float f = h * 6.0f - i;
-		float p = v * ( 1.0f - s );
-		float q = v * ( 1.0f - f * s );
-		float t = v * ( 1.0f - ( 1.0f - f ) * s );
-		switch ( i % 6 )
-		{
-			case 0:
-				r = v, g = t, b = p;
-				break;
-			case 1:
-				r = q, g = v, b = p;
-				break;
-			case 2:
-				r = p, g = v, b = t;
-				break;
-			case 3:
-				r = p, g = q, b = v;
-				break;
-			case 4:
-				r = t, g = p, b = v;
-				break;
-			case 5:
-				r = v, g = p, b = q;
-				break;
-		}
-		uint32_t R = uint32_t( r * 255.0f );
-		uint32_t G = uint32_t( g * 255.0f );
-		uint32_t B = uint32_t( b * 255.0f );
-		return ( R << 16 ) | ( G << 8 ) | B;
-	}
-
-	void InitializeAudio()
-	{
-		std::filesystem::path path = "data/audio/Ticks";
-		if ( !std::filesystem::exists( path ) )
-			path = "D:/Sound & Fx/audio/Ticks";
-		m_audioManager.LoadFromDirectory( path.string() );
-		m_audioManager.SetVolume( m_soundVolume );
-	}
-
-	b2BodyId CreateRotatingCageWithHole( b2WorldId worldId, float radius, float thickness, float holeAngle, int segmentCount,
-										 float motorSpeed )
-	{
-		// Corps central de la cage
-		b2BodyDef bodyDef = b2DefaultBodyDef();
-		bodyDef.type = b2_dynamicBody;
-		bodyDef.position = { 0.0f, 0.0f };
-		b2BodyId cageBody = b2CreateBody( worldId, &bodyDef );
-
-		// --- Création des "murs" de la cage ---
-		float twoPi = 2.0f * b2_pi;
-		float segmentArc = ( twoPi - holeAngle ) / segmentCount;
-		float startAngle = -b2_pi / 2.0f + holeAngle * 0.5f;
-
-		b2ShapeDef shapeDef = b2DefaultShapeDef();
-		shapeDef.material = b2DefaultSurfaceMaterial();
-		shapeDef.material.friction = 0.1f;
-		shapeDef.material.restitution = 0.0f;
-		shapeDef.material.customColor = 0x44FFD5;
-
-		// --- Catégorie/Masque : CAGE ---
-		shapeDef.filter.categoryBits = CATEGORY_CAGE; // Marque ce shape comme "cage"
-		shapeDef.filter.maskBits = CATEGORY_SHAPE;	  // Il collisionne seulement avec les shapes dynamiques
-
-		for ( int i = 0; i < segmentCount; ++i )
-		{
-			float angleA = startAngle + i * segmentArc;
-			float angleB = startAngle + ( i + 1 ) * segmentArc;
-			b2Vec2 pA = { radius * std::cos( angleA ), radius * std::sin( angleA ) };
-			b2Vec2 pB = { radius * std::cos( angleB ), radius * std::sin( angleB ) };
-			b2Capsule capsule = { pA, pB, thickness * 0.5f };
-			b2CreateCapsuleShape( cageBody, &shapeDef, &capsule );
-		}
-
-		// --- Création des sensors pour le trou ---
-		int holeSensorCount = std::max( 1, int( std::ceil( segmentCount * ( holeAngle / ( twoPi - holeAngle ) ) ) ) );
-		float sensorArc = holeAngle / holeSensorCount;
-		float sensorStartAngle = -b2_pi / 2.0f - holeAngle * 0.5f;
-
-		for ( int i = 0; i < holeSensorCount; ++i )
-		{
-			float angleA = sensorStartAngle + i * sensorArc;
-			float angleB = sensorStartAngle + ( i + 1 ) * sensorArc;
-
-			b2Vec2 pA = { radius * std::cos( angleA ), radius * std::sin( angleA ) };
-			b2Vec2 pB = { radius * std::cos( angleB ), radius * std::sin( angleB ) };
-
-			b2ShapeDef sensorDef = b2DefaultShapeDef();
-			sensorDef.isSensor = true;
-			sensorDef.enableSensorEvents = true;
-			sensorDef.material.customColor = 0xFF0088;
-
-			// --- Catégorie/Masque : SENSOR ---
-			sensorDef.filter.categoryBits = CATEGORY_SENSOR; // "Sensor"
-			sensorDef.filter.maskBits = CATEGORY_SHAPE;		 // Ne détecte que les shapes dynamiques
-
-			// User data pour retrouver la cage à détruire
-			CageHoleSensorData* data = new CageHoleSensorData;
-			data->cageIndex = i;
-			data->cageBody = cageBody;
-			sensorDef.userData = data;
-
-			b2Capsule holeSensorCapsule = { pA, pB, thickness * 0.4f };
-			b2CreateCapsuleShape( cageBody, &sensorDef, &holeSensorCapsule );
-		}
-
-		// Fixe la cage sur pivot
-		b2BodyDef pivotDef = b2DefaultBodyDef();
-		pivotDef.position = { 0.0f, 0.0f };
-		b2BodyId pivotId = b2CreateBody( worldId, &pivotDef );
-
-		b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
-		b2Vec2 pivot = { 0.0f, 0.0f };
-		jointDef.base.bodyIdA = pivotId;
-		jointDef.base.bodyIdB = cageBody;
-		jointDef.base.localFrameA.p = b2Body_GetLocalPoint( jointDef.base.bodyIdA, pivot );
-		jointDef.base.localFrameB.p = b2Body_GetLocalPoint( jointDef.base.bodyIdB, pivot );
-		jointDef.enableMotor = true;
-		jointDef.motorSpeed = motorSpeed;
-		jointDef.maxMotorTorque = 1e5f;
-		b2CreateRevoluteJoint( worldId, &jointDef );
-
-		return cageBody;
-	}
-
-	void CreateBodies()
-	{
-		// Détruit les bodies "shapes" précédents
-		for ( b2BodyId id : m_bodies )
-			if ( B2_IS_NON_NULL( id ) )
-				b2DestroyBody( id );
-		m_bodies.clear();
-
-		// Détruit les cages précédentes
-		for ( b2BodyId id : m_cageBodies )
-			if ( B2_IS_NON_NULL( id ) )
-				b2DestroyBody( id );
-		m_cageBodies.clear();
-
-		// --- Création dynamique des cages imbriquées ---
-		float baseRadius = 8.0f;
-		for ( int i = 0; i < m_cageCount; ++i )
-		{
-			float radius = baseRadius + i * ( m_cageThickness + m_cageSpacing );
-			int segmentCount = m_cageSegments;
-			float holeAngleRad = m_holeAngle * b2_pi / 180.0f;
-			b2BodyId cageId =
-				CreateRotatingCageWithHole( m_worldId, radius, m_cageThickness, holeAngleRad, segmentCount, m_cageMotorSpeed );
-			m_cageBodies.push_back( cageId );
-		}
-
-		// --- Création des bodies "shapes" (les projectiles/dynamiques de la grille) ---
-		int n = m_shapeCount;
-		int cols = int( std::ceil( std::sqrt( n ) ) );
-		int rows = ( n + cols - 1 ) / cols;
-		float dx = m_spacing;
-		float dy = m_spacing;
-		float totalW = dx * ( cols - 1 );
-		float totalH = dy * ( rows - 1 );
-		float startX = -totalW * 0.5f;
-		float startY = totalH * 0.5f;
-
-		for ( int i = 0; i < n; ++i )
-		{
-			int ix = i % cols;
-			int iy = i / cols;
-			float x = startX + ix * dx;
-			float y = startY - iy * dy;
-
-			b2BodyDef bodyDef = b2DefaultBodyDef();
-			bodyDef.type = b2_dynamicBody;
-			bodyDef.position = { x, y };
-			bodyDef.linearVelocity = { 0.0f, -10.0f };
-			bodyDef.motionLocks = m_motionLocks;
-			bodyDef.linearDamping = m_linearDamping;
-			bodyDef.angularDamping = m_angularDamping;
-			bodyDef.gravityScale = m_gravityScale;
-			bodyDef.isBullet = m_isBullet;
-
-			b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
-			m_bodies.push_back( bodyId );
-
-			b2ShapeDef shapeDef = b2DefaultShapeDef();
-			shapeDef.enableSensorEvents = true;
-			shapeDef.density = m_density;
-			shapeDef.material = b2DefaultSurfaceMaterial();
-			shapeDef.material.restitution = m_restitution;
-			shapeDef.material.friction = m_friction;
-			shapeDef.enableHitEvents = true;
-			shapeDef.material.customColor = ComputeEllipticColor( ix, iy, cols, rows );
-
-			// --- Catégorie/Masque : SHAPE (projectile dynamique) ---
-			shapeDef.filter.categoryBits = CATEGORY_SHAPE;
-			shapeDef.filter.maskBits = CATEGORY_SENSOR | CATEGORY_CAGE; // Collisionne avec cages, détecté par sensors
-
-			ShapeType shapeType = static_cast<ShapeType>( m_shapeType );
-
-			if ( shapeType == e_circleShape )
-			{
-				b2Circle circle = { { 0.0f, 0.0f }, 0.5f * m_shapeSize };
-				b2CreateCircleShape( bodyId, &shapeDef, &circle );
-			}
-			else if ( shapeType == e_capsuleShape )
-			{
-				b2Capsule capsule = { { -0.5f * m_shapeSize, 0.0f }, { 0.5f * m_shapeSize, 0.0f }, 0.25f * m_shapeSize };
-				b2CreateCapsuleShape( bodyId, &shapeDef, &capsule );
-			}
-			else if ( shapeType == e_boxShape )
-			{
-				b2Polygon box = b2MakeBox( 0.5f * m_shapeSize, 0.5f * m_shapeSize );
-				b2CreatePolygonShape( bodyId, &shapeDef, &box );
-			}
-			else // Polygones réguliers 3-8 côtés
-			{
-				int sides = int( shapeType ) - int( e_polygon3 ) + 3;
-				std::vector<b2Vec2> verts( sides );
-				const float R = 0.5f * m_shapeSize;
-				const float twoPi = 2.0f * b2_pi;
-				for ( int j = 0; j < sides; ++j )
-					verts[j] = { std::cos( j * twoPi / sides ) * R, std::sin( j * twoPi / sides ) * R };
-				b2Hull hull = b2ComputeHull( verts.data(), sides );
-				if ( hull.count > 0 )
-				{
-					b2Polygon poly = b2MakePolygon( &hull, 0 );
-					b2CreatePolygonShape( bodyId, &shapeDef, &poly );
-				}
-			}
-		}
-	}
-};
-
-static int sampleRotatingRingEscape = RegisterSample( "9:16", "RotatingRingEscape", RotatingRingEscape::Create );
-
-class CirclesColoringVS : public Sample
-{
-public:
-	//---------------------------------------------------------------
-	// Types
-	//---------------------------------------------------------------
-
-	enum ShapeType
-	{
-		e_circleShape = 0,
-		e_capsuleShape,
-		e_boxShape,
-		e_polygon3,
-		e_polygon4,
-		e_polygon5,
-		e_polygon6,
-		e_polygon7,
-		e_polygon8,
-	};
-
-	struct ShapeConfig
-	{
-		ShapeType type;
-		uint32_t color;
-	};
-
-	struct b2ShapeIdHash
-	{
-		size_t operator()( const b2ShapeId& id ) const noexcept
-		{
-			return std::hash<uint64_t>()( b2StoreShapeId( id ) );
-		}
-	};
-
-	struct b2ShapeIdEqual
-	{
-		bool operator()( const b2ShapeId& a, const b2ShapeId& b ) const noexcept
-		{
-			return B2_ID_EQUALS( a, b );
-		}
-	};
-
-	static Sample* Create( SampleContext* context )
-	{
-		return new CirclesColoringVS( context );
-	}
-
-	static constexpr uint32_t kDefaultColors[2] = { 0xE53F3F, 0x3F6FE5 };
-
-	//---------------------------------------------------------------
-	// Construction
-	//---------------------------------------------------------------
-
-	explicit CirclesColoringVS( SampleContext* context )
-		: Sample( context )
-		, m_enableHitEvents( true )
-		, m_soundVolume( 50.0f )
-		, m_linearDamping( 0.0f )
-		, m_angularDamping( 0.0f )
-		, m_gravityScale( 1.0f )
-		, m_isBullet( false )
-		, m_gravity{ 0.0f, -10.0f }
-		, m_motionLocks{ false, false, false }
-	{
-		if ( !m_context->restart )
-		{
-			m_context->camera.m_center = { 0.0f, 0.0f };
-			m_context->camera.m_zoom = 20.0f;
-		}
-
-		b2World_SetGravity( m_worldId, m_gravity );
-		InitializeAudio();
-		CreateBodies();
-	}
-
-	//---------------------------------------------------------------
-	// Step
-	//---------------------------------------------------------------
-
-	void Step() override
-	{
-		Sample::Step();
-
-		b2ContactEvents evts = b2World_GetContactEvents( m_worldId );
-
-		for ( int i = 0; i < evts.beginCount; ++i )
-		{
-			const b2ContactBeginTouchEvent& e = evts.beginEvents[i];
-
-			bool aIsProj = m_shapeColorMap.count( e.shapeIdA );
-			bool bIsProj = m_shapeColorMap.count( e.shapeIdB );
-			bool aIsSeg = m_segmentOriginalColor.count( e.shapeIdA );
-			bool bIsSeg = m_segmentOriginalColor.count( e.shapeIdB );
-
-			if ( aIsProj && bIsSeg )
-			{
-				uint32_t col = m_shapeColorMap[e.shapeIdA];
-				b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.shapeIdB );
-				mat.customColor = col;
-				b2Shape_SetSurfaceMaterial( e.shapeIdB, mat );
-			}
-			else if ( bIsProj && aIsSeg )
-			{
-				uint32_t col = m_shapeColorMap[e.shapeIdB];
-				b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.shapeIdA );
-				mat.customColor = col;
-				b2Shape_SetSurfaceMaterial( e.shapeIdA, mat );
-			}
-		}
-
-		if ( m_enableHitEvents )
-		{
-			for ( int i = 0; i < evts.hitCount; ++i )
-				m_audioManager.HandleHitEffect( evts.hitEvents[i].point, evts.hitEvents[i].approachSpeed, m_stepCount );
-		}
-		m_audioManager.PlayQueued();
-		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
-	}
-
-	//---------------------------------------------------------------
-	// GUI
-	//---------------------------------------------------------------
-
-	void UpdateGui() override
-	{
-		ImGuiIO& io = ImGui::GetIO();
-		ImVec2 center = { io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f };
-
-		ImGui::SetNextWindowPos( center, ImGuiCond_Always, { 0.5f, 0.5f } );
-		ImGui::SetNextWindowSize( { 400, 0 }, ImGuiCond_Always );
-
-		ImGui::Begin( "BluePrint Settings" );
-
-		const char* shapeNames[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
-									 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
-		bool recreate = false;
-
-		for ( int team = 0; team < 2; ++team )
-		{
-			ImGui::PushID( team );
-			int idx = static_cast<int>( m_shapes[team].type );
-			if ( ImGui::Combo( team == 0 ? "Team A" : "Team B", &idx, shapeNames, IM_ARRAYSIZE( shapeNames ) ) )
-			{
-				m_shapes[team].type = static_cast<ShapeType>( idx );
-				recreate = true;
-			}
-
-			float col[3] = { ( ( m_shapes[team].color >> 16 ) & 0xFF ) / 255.0f,
-							 ( ( m_shapes[team].color >> 8 ) & 0xFF ) / 255.0f, ( m_shapes[team].color & 0xFF ) / 255.0f };
-
-			if ( ImGui::ColorEdit3( "##col", col, ImGuiColorEditFlags_NoInputs ) )
-			{
-				m_shapes[team].color =
-					( (uint32_t)( col[0] * 255 ) << 16 ) | ( (uint32_t)( col[1] * 255 ) << 8 ) | (uint32_t)( col[2] * 255 );
-				recreate = true;
-			}
-			ImGui::PopID();
-		}
-
-		if ( ImGui::SliderInt( "Bodies / team", &m_shapeCountPerType, 1, 50 ) )
-			recreate = true;
-
-		bool lockChanged = false;
-		lockChanged |= ImGui::Checkbox( "Lock X", &m_motionLocks.linearX );
-		ImGui::SameLine();
-		lockChanged |= ImGui::Checkbox( "Lock Y", &m_motionLocks.linearY );
-		ImGui::SameLine();
-		lockChanged |= ImGui::Checkbox( "Lock Rot", &m_motionLocks.angularZ );
-
-		if ( ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f" ) )
-			recreate = true;
-		if ( ImGui::SliderFloat( "Spacing", &m_spacing, 0.5f, 5.0f, "%.2f" ) )
-			recreate = true;
-
-		bool physChanged = false;
-		physChanged |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.5f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
-		physChanged |= ImGui::Checkbox( "Bullet", &m_isBullet );
-
-		if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.0f%%" ) )
-			m_audioManager.SetVolume( m_soundVolume );
-		ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents );
-
-		static const char* gNames[] = { "Terre", "Lune", "Mars", "0", "Reverse", "Max" };
-		static float gVals[] = { -10.0f, -1.62f, -3.71f, 0.0f, 10.0f, -980.0f };
-		static int gIdx = 0;
-		if ( ImGui::Combo( "Gravity Preset", &gIdx, gNames, IM_ARRAYSIZE( gNames ) ) )
-		{
-			m_gravity = { 0.0f, gVals[gIdx] };
-			b2World_SetGravity( m_worldId, m_gravity );
-		}
-		ImGui::Text( "Preset: %s", gNames[gIdx] );
-
-		ImGui::Separator();
-		bool cageChanged = false;
-		cageChanged |= ImGui::SliderInt( "Segments par cage", &m_cageSegments, 4, 128 );
-		cageChanged |= ImGui::SliderFloat( "Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f" );
-		cageChanged |= ImGui::SliderFloat( "Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
-
-		ImGui::End();
-
-		if ( recreate || lockChanged || physChanged || cageChanged )
-			CreateBodies();
-	}
-
-private:
-	//---------------------------------------------------------------
-	// Audio
-	//---------------------------------------------------------------
-	AudioManager m_audioManager;
-	float m_soundVolume;
-
-	//---------------------------------------------------------------
-	// Physique
-	//---------------------------------------------------------------
-	bool m_enableHitEvents;
-	b2MotionLocks m_motionLocks;
-	b2Vec2 m_gravity;
-	float m_linearDamping;
-	float m_angularDamping;
-	float m_gravityScale;
-	bool m_isBullet;
-	float m_restitution = 1.0f;
-	float m_friction = 0.0f;
-	float m_density = 1.0f;
-	float m_shapeSize = 2.0f;
-	float m_spacing = 1.0f;
-
-	//---------------------------------------------------------------
-	// Équipes
-	//---------------------------------------------------------------
-	ShapeConfig m_shapes[2] = { { e_circleShape, kDefaultColors[0] }, { e_boxShape, kDefaultColors[1] } };
-	int m_shapeCountPerType = 25;
-
-	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_shapeColorMap;
-
-	//---------------------------------------------------------------
-	// Cages
-	//---------------------------------------------------------------
-	float m_cageThickness = 0.6f;
-	float m_cageMotorSpeed = 0.5f;
-	int m_cageSegments = 40;
-	std::vector<b2BodyId> m_cageBodies;
-
-	//---------------------------------------------------------------
-	// Projectiles
-	//---------------------------------------------------------------
-	std::vector<b2BodyId> m_bodies;
-
-	//---------------------------------------------------------------
-	// Segments
-	//---------------------------------------------------------------
-	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_segmentOriginalColor;
-
-	//---------------------------------------------------------------
-	// Utilitaires
-	//---------------------------------------------------------------
-
-	std::vector<b2ShapeId> m_projectileShapes; // Les formes des équipes (projectiles)
-	std::vector<b2ShapeId> m_segmentShapes;	   // Les shapes de cage (segments)
-
-	void InitializeAudio()
-	{
-		std::filesystem::path p = "data/audio/Ticks";
-		if ( !std::filesystem::exists( p ) )
-			p = "D:/Sound & Fx/audio/Ticks";
-		m_audioManager.LoadFromDirectory( p.string() );
-		m_audioManager.SetVolume( m_soundVolume );
-	}
-
-	b2BodyId CreateFullCage( b2WorldId worldId, float radius, float thickness, int segCount, float speed )
-	{
-		b2BodyDef bd = b2DefaultBodyDef();
-		bd.type = b2_dynamicBody;
-		bd.position = { 0.0f, 0.0f };
-		b2BodyId cage = b2CreateBody( worldId, &bd );
-
-		b2ShapeDef sd = b2DefaultShapeDef();
-		sd.material = b2DefaultSurfaceMaterial();
-		sd.material.friction = 0.1f;
-		sd.material.customColor = 0x44FFD5;
-		sd.enableSensorEvents = true;
-		sd.filter.categoryBits = CATEGORY_CAGE;
-		sd.filter.maskBits = CATEGORY_SHAPE;
-
-		float dAng = 2.0f * b2_pi / segCount;
-		for ( int i = 0; i < segCount; ++i )
-		{
-			float a0 = i * dAng;
-			float a1 = ( i + 1 ) * dAng;
-
-			b2Vec2 p0 = { radius * std::cos( a0 ), radius * std::sin( a0 ) };
-			b2Vec2 p1 = { radius * std::cos( a1 ), radius * std::sin( a1 ) };
-			b2Vec2 c = 0.5f * ( p0 + p1 );
-			float ang = std::atan2( p1.y - p0.y, p1.x - p0.x );
-			float len = b2Distance( p0, p1 );
-
-			b2Polygon rect = b2MakeOffsetBox( 0.5f * len, 0.5f * thickness, c, b2MakeRot( ang ) );
-			b2ShapeId sid = b2CreatePolygonShape( cage, &sd, &rect );
-
-			m_segmentOriginalColor[sid] = sd.material.customColor;
-		}
-
-		b2BodyDef pivotDef;
-		pivotDef = b2DefaultBodyDef();
-		pivotDef.position = { 0.0f, 0.0f };
-		b2BodyId pivot = b2CreateBody( worldId, &pivotDef );
-
-		b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
-		jd.base.bodyIdA = pivot;
-		jd.base.bodyIdB = cage;
-		jd.enableMotor = true;
-		jd.motorSpeed = speed;
-		jd.maxMotorTorque = 1e5f;
-		b2CreateRevoluteJoint( worldId, &jd );
-
-		return cage;
-	}
-
-	void CreateBodies()
-
-	{
-		g_randomSeed = (uint32_t)std::time( nullptr );
-		for ( b2BodyId id : m_bodies )
-			if ( B2_IS_NON_NULL( id ) )
-				b2DestroyBody( id );
-		m_bodies.clear();
-
-		for ( b2BodyId id : m_cageBodies )
-			if ( B2_IS_NON_NULL( id ) )
-				b2DestroyBody( id );
-		m_cageBodies.clear();
-
-		m_shapeColorMap.clear();
-		m_segmentOriginalColor.clear();
-
-		float radius = 8.0f;
-		m_cageBodies.push_back( CreateFullCage( m_worldId, radius, m_cageThickness, m_cageSegments, m_cageMotorSpeed ) );
-
-		int total = 2 * m_shapeCountPerType;
-		int cols = static_cast<int>( std::ceil( std::sqrt( total ) ) );
-		int rows = ( total + cols - 1 ) / cols;
-
-		float dx = m_spacing;
-		float dy = m_spacing;
-
-		float startX = -0.5f * dx * ( cols - 1 );
-		float startY = 0.5f * dy * ( rows - 1 );
-
-		for ( int i = 0; i < total; ++i )
-		{
-			int team = i & 1;
-			const ShapeConfig& cfg = m_shapes[team];
-
-			int ix = i % cols;
-			int iy = i / cols;
-
-			float x = startX + ix * dx;
-			float y = startY - iy * dy;
-
-			b2BodyDef bd = b2DefaultBodyDef();
-			bd.type = b2_dynamicBody;
-			bd.position = { x, y };
-			float speed = RandomFloatRange( 5.0f, 5.0f );	 // module de vitesse aléatoire
-			float angle = RandomFloatRange( -b2_pi, b2_pi ); // angle aléatoire
-			bd.linearVelocity = { speed * std::cos( angle ), speed * std::sin( angle ) };
-			bd.motionLocks = m_motionLocks;
-			bd.linearDamping = m_linearDamping;
-			bd.angularDamping = m_angularDamping;
-			bd.gravityScale = m_gravityScale;
-			bd.isBullet = m_isBullet;
-
-			b2BodyId body = b2CreateBody( m_worldId, &bd );
-			m_bodies.push_back( body );
-
-			b2ShapeDef sd = b2DefaultShapeDef();
-			sd.density = m_density;
-			sd.material = b2DefaultSurfaceMaterial();
-			sd.material.restitution = m_restitution;
-			sd.material.friction = m_friction;
-			sd.material.customColor = cfg.color;
-			sd.enableSensorEvents = true;
-			sd.enableHitEvents = true;
-			sd.filter.categoryBits = CATEGORY_SHAPE;
-			sd.filter.maskBits = CATEGORY_CAGE;
-
-			auto addShape = [&]( b2ShapeId sid ) { m_shapeColorMap[sid] = cfg.color; };
-
-			switch ( cfg.type )
-			{
-				case e_circleShape:
-				{
-					b2Circle c = { { 0.0f, 0.0f }, 0.5f * m_shapeSize };
-					addShape( b2CreateCircleShape( body, &sd, &c ) );
-				}
-				break;
-
-				case e_capsuleShape:
-				{
-					b2Capsule cap = { { -0.5f * m_shapeSize, 0.0f }, { 0.5f * m_shapeSize, 0.0f }, 0.25f * m_shapeSize };
-					addShape( b2CreateCapsuleShape( body, &sd, &cap ) );
-				}
-				break;
-
-				case e_boxShape:
-				{
-					b2Polygon box = b2MakeBox( 0.5f * m_shapeSize, 0.5f * m_shapeSize );
-					addShape( b2CreatePolygonShape( body, &sd, &box ) );
-				}
-				break;
-
-				default:
-				{
-					int sides = int( cfg.type ) - int( e_polygon3 ) + 3;
-					std::vector<b2Vec2> v( sides );
-					float R = 0.5f * m_shapeSize;
-					float twoPi = 2.0f * b2_pi;
-					for ( int k = 0; k < sides; ++k )
-						v[k] = { std::cos( k * twoPi / sides ) * R, std::sin( k * twoPi / sides ) * R };
-					b2Hull h = b2ComputeHull( v.data(), sides );
-					if ( h.count )
-					{
-						b2Polygon poly = b2MakePolygon( &h, 0.0f );
-						addShape( b2CreatePolygonShape( body, &sd, &poly ) );
-					}
-				}
-			}
-		}
-	}
-
-	//---------------------------------------------------------------
-	// Catégories
-	//---------------------------------------------------------------
-	static constexpr uint16_t CATEGORY_SHAPE = 0x0002;
-	static constexpr uint16_t CATEGORY_CAGE = 0x0008;
-};
-
-static int sampleCirclesColoringVS = RegisterSample( "9:16", "CirclesColoringVS", CirclesColoringVS::Create );
-
 class TestCollisionColor : public Sample
 {
 public:
@@ -5975,510 +4495,6 @@ private:
 
 static int sampleGUITest = RegisterSample( "9:16", "GUITest", GUITest::Create );
 
-class CageSensorDuplication : public Sample
-{
-public:
-	//---------------------------------------------------------------
-	// Types
-	//---------------------------------------------------------------
-	enum ShapeType
-	{
-		e_circleShape = 0,
-		e_capsuleShape,
-		e_boxShape,
-		e_polygon3,
-		e_polygon4,
-		e_polygon5,
-		e_polygon6,
-		e_polygon7,
-		e_polygon8,
-	};
-
-	struct ShapeConfig
-	{
-		ShapeType type;
-		uint32_t color;
-	};
-
-	struct b2ShapeIdHash
-	{
-		size_t operator()( const b2ShapeId& id ) const noexcept
-		{
-			return std::hash<uint64_t>()( b2StoreShapeId( id ) );
-		}
-	};
-	struct b2ShapeIdEqual
-	{
-		bool operator()( const b2ShapeId& a, const b2ShapeId& b ) const noexcept
-		{
-			return B2_ID_EQUALS( a, b );
-		}
-	};
-
-	using TouchSet = std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual>;
-
-	static Sample* Create( SampleContext* context )
-	{
-		return new CageSensorDuplication( context );
-	}
-
-	static constexpr uint32_t kDefaultColors[2] = { 0xE53F3F, 0x3F6FE5 };
-
-	//---------------------------------------------------------------
-	// Construction
-	//---------------------------------------------------------------
-	explicit CageSensorDuplication( SampleContext* context )
-		: Sample( context )
-		, m_enableHitEvents( true )
-		, m_soundVolume( 50.0f )
-		, m_linearDamping( 0.5f )
-		, m_angularDamping( 0.2f )
-		, m_gravityScale( 0.0f )
-		, m_isBullet( false )
-		, m_gravity{ 0.0f, -10.0f }
-		, m_motionLocks{ false, false, false }
-		, m_angVelMin( -10.0f )
-		, m_angVelMax( 10.0f )
-		, m_speedMin( 4.5f )
-		, m_speedMax( 5.0f )
-	{
-		m_context->enableSleep = true;
-		if ( !m_context->restart )
-		{
-			m_context->camera.m_center = { 0.0f, 0.0f };
-			m_context->camera.m_zoom = 25.0f;
-		}
-		b2World_SetGravity( m_worldId, m_gravity );
-		InitializeAudio();
-		CreateBodies();
-
-		// Les murs
-		{
-			// Paramètres de l'arène (9:16)
-			float arenaHalfWidth = 14.0f;  // Largeur intermédiaire
-			float arenaHalfHeight = 25.0f; // Hauteur intermédiaire
-
-			b2BodyDef bodyDef = b2DefaultBodyDef();
-			b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
-
-			b2ShapeDef shapeDef = b2DefaultShapeDef();
-			shapeDef.material = b2DefaultSurfaceMaterial();
-			shapeDef.material.restitution = 1.0f;
-			shapeDef.material.friction = 0.0f;
-			shapeDef.material.customColor = 0xAAAAAA;
-
-			// Mur du bas
-			b2Segment bottomWall = { { -arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, -arenaHalfHeight } };
-			b2CreateSegmentShape( groundId, &shapeDef, &bottomWall );
-
-			// Mur du haut
-			b2Segment topWall = { { -arenaHalfWidth, arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
-			b2CreateSegmentShape( groundId, &shapeDef, &topWall );
-
-			// Mur gauche
-			b2Segment leftWall = { { -arenaHalfWidth, -arenaHalfHeight }, { -arenaHalfWidth, arenaHalfHeight } };
-			b2CreateSegmentShape( groundId, &shapeDef, &leftWall );
-
-			// Mur droit
-			b2Segment rightWall = { { arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
-			b2CreateSegmentShape( groundId, &shapeDef, &rightWall );
-		}
-
-	}
-
-	//---------------------------------------------------------------
-	// Step
-	//---------------------------------------------------------------
-	void Step() override
-	{
-		Sample::Step();
-
-		b2SensorEvents events = b2World_GetSensorEvents( m_worldId );
-		const b2Vec2 spawnCenter{ 0.0f, 0.0f };
-
-		// --------------------------- BEGIN TOUCH -----------------------------
-		for ( int i = 0; i < events.beginCount; ++i )
-		{
-			const b2SensorBeginTouchEvent& e = events.beginEvents[i];
-
-			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
-				continue;
-			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
-				continue;
-
-			m_touchingSegments[e.visitorShapeId].insert( e.sensorShapeId );
-
-			uint32_t col = m_shapeColorMap[e.visitorShapeId];
-			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
-			mat.customColor = col;
-			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
-		}
-
-		// ---------------------------- END TOUCH ------------------------------
-		for ( int i = 0; i < events.endCount; ++i )
-		{
-			const b2SensorEndTouchEvent& e = events.endEvents[i];
-
-			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
-				continue;
-			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
-				continue;
-
-			auto& set = m_touchingSegments[e.visitorShapeId];
-			set.erase( e.sensorShapeId );
-
-			if ( set.empty() )
-			{
-				m_touchingSegments.erase( e.visitorShapeId );
-
-				if ( m_alreadyDuplicated.insert( e.visitorShapeId ).second )
-				{
-					int genLevel = m_generationLevel[e.visitorShapeId];
-					for ( int k = 0; k < 2; ++k )
-						CreateProjectile( spawnCenter, genLevel + 1 );
-
-					if ( m_enableHitEvents )
-						m_audioManager.PlaySpawnSound();
-				}
-			}
-
-			uint32_t baseCol = m_segmentOriginalColor[e.sensorShapeId];
-			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
-			mat.customColor = baseCol;
-			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
-		}
-
-		// --------------------- Effets sonores (impacts physiques) ---------------------
-		if ( m_enableHitEvents )
-		{
-			b2ContactEvents evts = b2World_GetContactEvents( m_worldId );
-			for ( int i = 0; i < evts.hitCount; ++i )
-				m_audioManager.HandleHitEffect( evts.hitEvents[i].point, evts.hitEvents[i].approachSpeed, m_stepCount );
-		}
-		m_audioManager.PlayQueued();
-		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
-	}
-
-	//---------------------------------------------------------------
-	// GUI
-	//---------------------------------------------------------------
-	void UpdateGui() override
-	{
-		ImGuiIO& io = ImGui::GetIO();
-
-		// === Fenêtre 1 : Contrôles ===
-		ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.15f, io.DisplaySize.y * 0.54f ), ImGuiCond_Always,
-								 ImVec2( 0.5f, 0.0f ) );
-		ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
-		ImGui::Begin( "BluePrint Settings" );
-
-		const char* shapeNames[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
-									 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
-		bool recreate = false;
-		
-		bool lockChanged = false;
-		lockChanged |= ImGui::Checkbox( "Lock X", &m_motionLocks.linearX );
-		ImGui::SameLine();
-		lockChanged |= ImGui::Checkbox( "Lock Y", &m_motionLocks.linearY );
-		ImGui::SameLine();
-		lockChanged |= ImGui::Checkbox( "Lock Rot", &m_motionLocks.angularZ );
-
-		if ( ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f" ) )
-			recreate = true;
-		if ( ImGui::SliderFloat( "Spacing", &m_spacing, 0.5f, 5.0f, "%.2f" ) )
-			recreate = true;
-
-		bool physChanged = false;
-		physChanged |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.5f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
-		physChanged |= ImGui::Checkbox( "Bullet", &m_isBullet );
-
-		physChanged |= ImGui::SliderFloat( "Min Speed", &m_speedMin, 0.0f, 30.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Max Speed", &m_speedMax, 0.0f, 30.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Min Ang Vel", &m_angVelMin, -50.0f, 0.0f, "%.2f" );
-		physChanged |= ImGui::SliderFloat( "Max Ang Vel", &m_angVelMax, 0.0f, 50.0f, "%.2f" );
-
-		if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.0f%%" ) )
-			m_audioManager.SetVolume( m_soundVolume );
-		ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents );
-
-		ImGui::Separator();
-		bool cageChanged = false;
-		cageChanged |= ImGui::SliderInt( "Segments par cage", &m_cageSegments, 4, 128 );
-		cageChanged |= ImGui::SliderFloat( "Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f" );
-		cageChanged |= ImGui::SliderFloat( "Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
-		ImGui::End();
-
-		if ( recreate || lockChanged || physChanged || cageChanged )
-			CreateBodies();
-
-		// === Fenêtre 1 : Contrôles (inchangée) ===
-		ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.15f, io.DisplaySize.y * 0.54f ), ImGuiCond_Always,
-								 ImVec2( 0.5f, 0.0f ) );
-		ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
-		ImGui::Begin( "BluePrint Settings" );
-		ImGui::End();
-
-		// === HUD : TITRE seul, ombre douce + texte blanc (minimaliste pro) ===
-		{
-			ImFont* titleFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
-			const char* title = "PROJECTILES";
-			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
-
-			ImGui::PushFont( titleFont );
-			ImVec2 ts = ImGui::CalcTextSize( title );
-			ImGui::PopFont();
-
-			float padX = ts.x * 0.2f;
-			float padY = ts.y * 0.5f;
-			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
-
-			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.17f ), ImGuiCond_Always,
-									 ImVec2( 0.5f, 0.0f ) );
-			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
-			ImGui::SetNextWindowBgAlpha( 0.0f );
-			ImGui::Begin( "##HUDTitleOmbre", nullptr, flags );
-
-			ImDrawList* dl = ImGui::GetWindowDrawList();
-			ImVec2 wp = ImGui::GetWindowPos();
-			ImVec2 ws = ImGui::GetWindowSize();
-			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
-
-			// Ombre douce (décalage +1.5, alpha 80)
-			dl->AddText( titleFont, titleFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 80 ), title );
-			// Texte principal blanc légèrement adouci (alpha 230)
-			dl->AddText( titleFont, titleFont->FontSize, tp, IM_COL32( 255, 255, 255, 230 ), title );
-
-			ImGui::End();
-		}
-
-		// === HUD : COMPTEUR de projectiles (ombre douce + texte blanc) ===
-		{
-			ImFont* largeFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
-			std::string countText = std::to_string( m_projectileCount );
-
-			ImGui::PushFont( largeFont ); // S’assurer que le calcul correspond à la police large
-			ImVec2 countSize = ImGui::CalcTextSize( countText.c_str() );
-			ImGui::PopFont();
-
-			// Padding confortable (plus généreux sur Y !)
-			const float padX = 40.0f;
-			const float padY = 25.0f;
-			ImVec2 winSize( countSize.x + padX * 2, countSize.y + padY * 2 );
-
-			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.22f ), ImGuiCond_Always,
-									 ImVec2( 0.5f, 0.0f ) );
-			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
-			ImGui::SetNextWindowBgAlpha( 0.0f );
-
-			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-									 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
-
-			ImGui::Begin( "##HUDCountOmbre", nullptr, flags );
-
-			ImDrawList* dl = ImGui::GetWindowDrawList();
-			ImVec2 wp = ImGui::GetWindowPos();
-			ImVec2 ws = ImGui::GetWindowSize();
-
-			// Placement parfaitement centré
-			ImVec2 tp( wp.x + ( ws.x - countSize.x ) * 0.5f, wp.y + ( ws.y - countSize.y ) * 0.5f );
-
-			// Ombre douce (léger décalage)
-			dl->AddText( largeFont, largeFont->FontSize, ImVec2( tp.x + 2.0f, tp.y + 2.0f ), IM_COL32( 0, 0, 0, 100 ),
-						 countText.c_str() );
-			// Texte principal blanc doux
-			dl->AddText( largeFont, largeFont->FontSize, tp, IM_COL32( 255, 255, 255, 240 ), countText.c_str() );
-
-			ImGui::End();
-		}
-	}
-
-private:
-	// Audio
-	AudioManager m_audioManager;
-	float m_soundVolume;
-
-	// Physique
-	bool m_enableHitEvents;
-	b2MotionLocks m_motionLocks;
-	b2Vec2 m_gravity;
-	float m_linearDamping;
-	float m_angularDamping;
-	float m_gravityScale;
-	bool m_isBullet;
-	float m_restitution = 1.0f;
-	float m_friction = 0.0f;
-	float m_density = 1.0f;
-	float m_shapeSize = 1.0f;
-	float m_spacing = 1.0f;
-	// Nouvelles plages pour la vélocité
-	float m_speedMin = 5.0f, m_speedMax = 5.0f;
-	float m_angVelMin = -10.0f, m_angVelMax = 10.0f;
-
-	// Équipes
-	ShapeConfig m_shapes[2] = { { e_circleShape, 0xE53F3F }, { e_boxShape, 0x3F6FE5 } };
-	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_shapeColorMap;
-
-	// Cage
-	float m_cageThickness = 0.25f;
-	float m_cageMotorSpeed = 0.0f;
-	int m_cageSegments = 50;
-	std::vector<b2BodyId> m_cageBodies;
-	// compteur de projectiles
-	int m_projectileCount = 0;
-
-	// Projectiles
-	std::vector<b2BodyId> m_bodies;
-
-	// Segments → couleur d’origine
-	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_segmentOriginalColor;
-
-	// Gestion duplication/génération
-	std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual> m_alreadyDuplicated;
-	std::unordered_map<b2ShapeId, int, b2ShapeIdHash, b2ShapeIdEqual> m_generationLevel;
-
-	// Ensemble des segments actuellement touchés par chaque projectile
-	std::unordered_map<b2ShapeId, TouchSet, b2ShapeIdHash, b2ShapeIdEqual> m_touchingSegments;
-
-	// Audio init
-	void InitializeAudio()
-	{
-		std::filesystem::path p = "data/audio/Ticks";
-		if ( !std::filesystem::exists( p ) )
-			p = "D:/Sound & Fx/audio/Ticks";
-		m_audioManager.LoadFromDirectory( p.string() );
-		m_audioManager.SetVolume( m_soundVolume );
-	}
-
-	// Centralise la création d’un projectile (utilisé partout)
-	void CreateProjectile( const b2Vec2& pos, int genLevel )
-	{
-		float speed = RandomFloatRange( m_speedMin, m_speedMax );
-		float angle = RandomFloatRange( -b2_pi, b2_pi );
-
-		b2BodyDef bd = b2DefaultBodyDef();
-		bd.type = b2_dynamicBody;
-		bd.position = pos;
-		bd.linearVelocity = { speed * std::cos( angle ), speed * std::sin( angle ) };
-		bd.angularVelocity = RandomFloatRange( m_angVelMin, m_angVelMax );
-		bd.motionLocks = m_motionLocks;
-		bd.linearDamping = m_linearDamping;
-		bd.angularDamping = m_angularDamping;
-		bd.gravityScale = m_gravityScale;
-		bd.isBullet = m_isBullet;
-
-		b2BodyId body = b2CreateBody( m_worldId, &bd );
-		m_bodies.push_back( body );
-
-		b2ShapeDef sd = b2DefaultShapeDef();
-		sd.density = m_density;
-		sd.material = b2DefaultSurfaceMaterial();
-		sd.material.restitution = m_restitution;
-		sd.material.friction = m_friction;
-		sd.material.customColor = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
-								  ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) |
-								  uint32_t( RandomFloatRange( 0, 1 ) * 255 );
-		sd.isSensor = true;
-		sd.enableSensorEvents = true;
-		sd.enableHitEvents = true;
-
-		b2Circle c{ { 0.0f, 0.0f }, 0.5f * m_shapeSize };
-		b2ShapeId sid = b2CreateCircleShape( body, &sd, &c );
-		m_shapeColorMap[sid] = sd.material.customColor;
-		m_generationLevel[sid] = genLevel;
-		m_projectileCount++;
-	}
-
-	// Cage sensor
-	b2BodyId CreateFullCage( b2WorldId worldId, float radius, float thickness, int segCount, float speed )
-	{
-		b2BodyDef bd = b2DefaultBodyDef();
-		bd.type = b2_dynamicBody;
-		bd.position = { 0.0f, 0.0f };
-		b2BodyId cage = b2CreateBody( worldId, &bd );
-
-		b2ShapeDef sd = b2DefaultShapeDef();
-		sd.material = b2DefaultSurfaceMaterial();
-		sd.material.friction = 0.1f;
-		sd.material.customColor = 0x44FFD5;
-		sd.isSensor = true;
-		sd.enableSensorEvents = true;
-
-		float dAng = 2.0f * b2_pi / segCount;
-		for ( int i = 0; i < segCount; ++i )
-		{
-			float a0 = i * dAng;
-			float a1 = ( i + 1 ) * dAng;
-
-			b2Vec2 p0 = { radius * std::cos( a0 ), radius * std::sin( a0 ) };
-			b2Vec2 p1 = { radius * std::cos( a1 ), radius * std::sin( a1 ) };
-			b2Vec2 c = 0.5f * ( p0 + p1 );
-			float ang = std::atan2( p1.y - p0.y, p1.x - p0.x );
-			float len = b2Distance( p0, p1 );
-
-			b2Polygon rect = b2MakeOffsetBox( 0.5f * len, 0.5f * thickness, c, b2MakeRot( ang ) );
-			b2ShapeId sid = b2CreatePolygonShape( cage, &sd, &rect );
-			m_segmentOriginalColor[sid] = sd.material.customColor;
-		}
-
-		b2BodyDef pivotDef;
-		pivotDef = b2DefaultBodyDef();
-		pivotDef.position = { 0.0f, 0.0f };
-		b2BodyId pivot = b2CreateBody( worldId, &pivotDef );
-
-		b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
-		jd.base.bodyIdA = pivot;
-		jd.base.bodyIdB = cage;
-		jd.enableMotor = true;
-		jd.motorSpeed = speed;
-		jd.maxMotorTorque = 1e5f;
-		b2CreateRevoluteJoint( worldId, &jd );
-
-		return cage;
-	}
-
-	// Création bodies + reset duplications/overlap/génération
-	void CreateBodies()
-	{
-		m_alreadyDuplicated.clear();
-		m_generationLevel.clear();
-		m_touchingSegments.clear();
-		g_randomSeed = (uint32_t)std::time( nullptr );
-
-		for ( b2BodyId id : m_bodies )
-			if ( B2_IS_NON_NULL( id ) )
-				b2DestroyBody( id );
-		m_bodies.clear();
-
-		for ( b2BodyId id : m_cageBodies )
-			if ( B2_IS_NON_NULL( id ) )
-				b2DestroyBody( id );
-		m_cageBodies.clear();
-
-		m_shapeColorMap.clear();
-		m_segmentOriginalColor.clear();
-
-		// Cage sensor
-		float radius = 8.0f;
-		m_cageBodies.push_back( CreateFullCage( m_worldId, radius, m_cageThickness, m_cageSegments, m_cageMotorSpeed ) );
-
-		// 1 projectile central
-		m_shapes[0].color = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
-							( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) | uint32_t( RandomFloatRange( 0, 1 ) * 255 );
-
-		m_projectileCount = 0; // Reset à chaque reset/simulation
-		CreateProjectile( { 0.0f, 0.0f }, 0 );
-		m_projectileCount++; // Incrémente ici
-	}
-};
-static int sampleCageSensorDuplication = RegisterSample( "9:16", "CageSensorDuplication", CageSensorDuplication::Create );
-
-
-
 class Testtttttttttttttttttttttt : public Sample
 {
 public:
@@ -6799,10 +4815,14 @@ public:
 
 static int sampleColumnColorCrash = RegisterSample( "9:16", "ColumnColorCrash", ColumnColorCrash::Create );
 
-class GrowingCageSample : public Sample
+class CageGrowth : public Sample
 {
 public:
-	explicit GrowingCageSample( SampleContext* context )
+	// Couleurs harmonisées (fond bleu conseillé)
+	static constexpr uint32_t kCageColor = 0xFFC542;	   // Gold-yellow
+	static constexpr uint32_t kProjectileColor = 0xFF5876; // Pink/orange néon
+
+	explicit CageGrowth( SampleContext* context )
 		: Sample( context )
 	{
 		if ( !m_context->restart )
@@ -6824,7 +4844,8 @@ public:
 		m_audioVolume = 40.0f;
 		m_recreateCage = true;
 		m_recreateProjectile = true;
-		m_cageColor = 0x44FFD5;
+		m_cageColor = kCageColor;
+		m_projColor = kProjectileColor;
 		m_cageMotorSpeed = 0.1f;
 		m_cageDensity = 100.0f;
 		m_projectileId = b2_nullBodyId;
@@ -6895,26 +4916,17 @@ public:
 			recreateCage |= ImGui::SliderFloat( "Cage thickness", &m_thickness, 0.05f, 2.0f, "%.2f" );
 			recreateCage |= ImGui::SliderFloat( "Cage density", &m_cageDensity, 0.1f, 1000.0f, "%.2f" );
 
-			// Couleur cage (ColorEdit3)
-			float cageColor[3] = { ( ( m_cageColor >> 16 ) & 0xFF ) / 255.0f, ( ( m_cageColor >> 8 ) & 0xFF ) / 255.0f,
-								   ( m_cageColor & 0xFF ) / 255.0f };
-			if ( ImGui::ColorEdit3( "Cage color", cageColor, ImGuiColorEditFlags_NoInputs ) )
-			{
-				m_cageColor = ( uint32_t( cageColor[0] * 255 ) << 16 ) | ( uint32_t( cageColor[1] * 255 ) << 8 ) |
-							  uint32_t( cageColor[2] * 255 );
-				recreateCage = true;
-			}
+			// Couleur cage (ColorEdit3, couleur imposée par la palette)
+			ImGui::TextColored( ImVec4( 1.0f, 0.77f, 0.26f, 1.0f ), "Cage color is brand preset!" );
 
 			recreateCage |= ImGui::SliderFloat( "Cage rotation speed", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
 
 			ImGui::Separator();
 			ImGui::Text( "World Parameters" );
-			// Contrôle 2 axes pour la gravité (x, y)
 			if ( ImGui::SliderFloat2( "Gravity (x, y)", &m_gravity.x, -30.0f, 30.0f, "%.2f" ) )
 			{
 				b2World_SetGravity( m_worldId, m_gravity );
 			}
-			// (Optionnel) Remettre la gravité à la valeur par défaut
 			if ( ImGui::Button( "Reset Gravity" ) )
 			{
 				m_gravity = { 0.0f, -10.0f };
@@ -6922,7 +4934,6 @@ public:
 			}
 
 			ImGui::Separator();
-
 			ImGui::Text( "Projectile Parameters" );
 			recreateProj |= ImGui::SliderFloat( "Proj. size", &m_projSize, 0.1f, 5.0f, "%.2f" );
 			recreateProj |= ImGui::SliderFloat( "Proj. restitution", &m_projRestitution, 0.0f, 2.0f, "%.2f" );
@@ -6933,7 +4944,6 @@ public:
 			recreateProj |= ImGui::SliderFloat( "Proj. angular damping", &m_projAngularDamping, 0.0f, 5.0f, "%.2f" );
 
 			ImGui::Separator();
-
 			recreateAudio |= ImGui::SliderFloat( "Audio volume", &m_audioVolume, 0.0f, 100.0f, "%.0f%%" );
 
 			ImGui::Checkbox( "Recreate cage on change", &m_recreateCage );
@@ -6967,7 +4977,6 @@ public:
 			float padY = ts.y * 0.55f;
 			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
 
-			// Centré, position en haut (ajuste Y si besoin)
 			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.20f ), ImGuiCond_Always,
 									 ImVec2( 0.5f, 0.0f ) );
 			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
@@ -6979,8 +4988,11 @@ public:
 			ImVec2 ws = ImGui::GetWindowSize();
 			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
 
-			dl->AddText( titleFont, titleFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 100 ), polyName );
-			dl->AddText( titleFont, titleFont->FontSize, tp, IM_COL32( 220, 235, 255, 245 ), polyName );
+			// Ombre bleu foncé (adapté fond bleu TikTok)
+			dl->AddText( titleFont, titleFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 23, 65, 145, 110 ),
+						 polyName );
+			// Texte principal : blanc éclatant
+			dl->AddText( titleFont, titleFont->FontSize, tp, IM_COL32( 255, 255, 255, 245 ), polyName );
 
 			ImGui::End();
 		}
@@ -7000,7 +5012,6 @@ public:
 			float padY = ts.y * 0.42f;
 			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
 
-			// Positionné juste sous le titre (tu peux jouer sur le 0.245f pour rapprocher/éloigner)
 			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.245f ), ImGuiCond_Always,
 									 ImVec2( 0.5f, 0.0f ) );
 			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
@@ -7012,16 +5023,17 @@ public:
 			ImVec2 ws = ImGui::GetWindowSize();
 			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
 
-			dl->AddText( sidesFont, sidesFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 80 ),
+			// Ombre bleu foncé (même cohérence visuelle)
+			dl->AddText( sidesFont, sidesFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 23, 65, 145, 80 ),
 						 sidesText.c_str() );
-			dl->AddText( sidesFont, sidesFont->FontSize, tp, IM_COL32( 245, 228, 110, 235 ), sidesText.c_str() );
+			// Texte principal : jaune lumineux, complémentaire fond bleu
+			dl->AddText( sidesFont, sidesFont->FontSize, tp, IM_COL32( 255, 197, 66, 240 ), sidesText.c_str() );
 
 			ImGui::End();
 		}
 
 		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
 	}
-
 
 	void CreateCage( int segmentCount )
 	{
@@ -7038,7 +5050,7 @@ public:
 
 		b2ShapeDef sd = b2DefaultShapeDef();
 		sd.material = b2DefaultSurfaceMaterial();
-		sd.material.customColor = m_cageColor; // <-- Applique la couleur utilisateur !
+		sd.material.customColor = m_cageColor;
 		sd.material.friction = 0.0f;
 		sd.density = m_cageDensity;
 		sd.isSensor = false;
@@ -7069,7 +5081,7 @@ public:
 		jd.base.bodyIdA = pivot;
 		jd.base.bodyIdB = m_cageBodyId;
 		jd.enableMotor = true;
-		jd.motorSpeed = m_cageMotorSpeed; // <-- Applique la vitesse utilisateur
+		jd.motorSpeed = m_cageMotorSpeed;
 		jd.maxMotorTorque = 1e5f;
 		b2CreateRevoluteJoint( m_worldId, &jd );
 	}
@@ -7096,7 +5108,7 @@ public:
 		sd.material = b2DefaultSurfaceMaterial();
 		sd.material.restitution = m_projRestitution;
 		sd.material.friction = m_projFriction;
-		sd.material.customColor = 0xE53F3F;
+		sd.material.customColor = m_projColor;
 		sd.enableHitEvents = true;
 
 		b2Circle circle = { { 0.0f, 0.0f }, m_projSize };
@@ -7252,7 +5264,7 @@ public:
 
 	static Sample* Create( SampleContext* context )
 	{
-		return new GrowingCageSample( context );
+		return new CageGrowth( context );
 	}
 
 private:
@@ -7268,10 +5280,2903 @@ private:
 	float m_audioVolume;
 	bool m_recreateCage, m_recreateProjectile;
 	uint32_t m_cageColor;
+	uint32_t m_projColor;
 	float m_cageMotorSpeed;
-	float m_cageDensity;
+	float m_cageDensity = 100.0f;
 
 	AudioManager m_audioManager;
 };
 
-static int sampleGrowingCage = RegisterSample( "9:16", "Growing Cage", GrowingCageSample::Create );
+static int sampleCageGrowth = RegisterSample( "9:16", "CageGrowth", CageGrowth::Create );
+
+class CageDuplication : public Sample
+{
+public:
+	//---------------------------------------------------------------
+	// Types
+	//---------------------------------------------------------------
+	enum ShapeType
+	{
+		e_circleShape = 0,
+		e_capsuleShape,
+		e_boxShape,
+		e_polygon3,
+		e_polygon4,
+		e_polygon5,
+		e_polygon6,
+		e_polygon7,
+		e_polygon8,
+	};
+
+	struct ShapeConfig
+	{
+		ShapeType type;
+		uint32_t color;
+	};
+
+	struct b2ShapeIdHash
+	{
+		size_t operator()( const b2ShapeId& id ) const noexcept
+		{
+			return std::hash<uint64_t>()( b2StoreShapeId( id ) );
+		}
+	};
+	struct b2ShapeIdEqual
+	{
+		bool operator()( const b2ShapeId& a, const b2ShapeId& b ) const noexcept
+		{
+			return B2_ID_EQUALS( a, b );
+		}
+	};
+
+	using TouchSet = std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual>;
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new CageDuplication( context );
+	}
+
+	static constexpr uint32_t kDefaultColors[2] = { 0xE53F3F, 0x3F6FE5 };
+
+	//---------------------------------------------------------------
+	// Construction
+	//---------------------------------------------------------------
+	explicit CageDuplication( SampleContext* context )
+		: Sample( context )
+		, m_enableHitEvents( true )
+		, m_soundVolume( 50.0f )
+		, m_linearDamping( 0.5f )
+		, m_angularDamping( 0.2f )
+		, m_gravityScale( 0.0f )
+		, m_isBullet( false )
+		, m_gravity{ 0.0f, -10.0f }
+		, m_motionLocks{ false, false, false }
+		, m_angVelMin( -10.0f )
+		, m_angVelMax( 10.0f )
+		, m_speedMin( 4.5f )
+		, m_speedMax( 5.0f )
+	{
+		m_context->enableSleep = true;
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 25.0f;
+		}
+		b2World_SetGravity( m_worldId, m_gravity );
+		InitializeAudio();
+		CreateBodies();
+
+		// Les murs
+		{
+			// Paramètres de l'arène (9:16)
+			float arenaHalfWidth = 14.0f;  // Largeur intermédiaire
+			float arenaHalfHeight = 25.0f; // Hauteur intermédiaire
+
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.material = b2DefaultSurfaceMaterial();
+			shapeDef.material.restitution = 1.0f;
+			shapeDef.material.friction = 0.0f;
+			shapeDef.material.customColor = 0xAAAAAA;
+
+			// Mur du bas
+			b2Segment bottomWall = { { -arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, -arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &bottomWall );
+
+			// Mur du haut
+			b2Segment topWall = { { -arenaHalfWidth, arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &topWall );
+
+			// Mur gauche
+			b2Segment leftWall = { { -arenaHalfWidth, -arenaHalfHeight }, { -arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &leftWall );
+
+			// Mur droit
+			b2Segment rightWall = { { arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &rightWall );
+		}
+	}
+
+	//---------------------------------------------------------------
+	// Step
+	//---------------------------------------------------------------
+	void Step() override
+	{
+		Sample::Step();
+
+		b2SensorEvents events = b2World_GetSensorEvents( m_worldId );
+		const b2Vec2 spawnCenter{ 0.0f, 0.0f };
+
+		// --------------------------- BEGIN TOUCH -----------------------------
+		for ( int i = 0; i < events.beginCount; ++i )
+		{
+			const b2SensorBeginTouchEvent& e = events.beginEvents[i];
+
+			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
+				continue;
+			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
+				continue;
+
+			m_touchingSegments[e.visitorShapeId].insert( e.sensorShapeId );
+
+			uint32_t col = m_shapeColorMap[e.visitorShapeId];
+			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
+			mat.customColor = col;
+			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
+		}
+
+		// ---------------------------- END TOUCH ------------------------------
+		for ( int i = 0; i < events.endCount; ++i )
+		{
+			const b2SensorEndTouchEvent& e = events.endEvents[i];
+
+			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
+				continue;
+			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
+				continue;
+
+			auto& set = m_touchingSegments[e.visitorShapeId];
+			set.erase( e.sensorShapeId );
+
+			if ( set.empty() )
+			{
+				m_touchingSegments.erase( e.visitorShapeId );
+
+				if ( m_alreadyDuplicated.insert( e.visitorShapeId ).second )
+				{
+					int genLevel = m_generationLevel[e.visitorShapeId];
+					for ( int k = 0; k < 2; ++k )
+						CreateProjectile( spawnCenter, genLevel + 1 );
+
+					if ( m_enableHitEvents )
+						m_audioManager.PlaySpawnSound();
+				}
+			}
+
+			uint32_t baseCol = m_segmentOriginalColor[e.sensorShapeId];
+			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
+			mat.customColor = baseCol;
+			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
+		}
+
+		// --------------------- Effets sonores (impacts physiques) ---------------------
+		if ( m_enableHitEvents )
+		{
+			b2ContactEvents evts = b2World_GetContactEvents( m_worldId );
+			for ( int i = 0; i < evts.hitCount; ++i )
+				m_audioManager.HandleHitEffect( evts.hitEvents[i].point, evts.hitEvents[i].approachSpeed, m_stepCount );
+		}
+		m_audioManager.PlayQueued();
+		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
+	}
+
+	//---------------------------------------------------------------
+	// GUI
+	//---------------------------------------------------------------
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+
+		// --- Fenêtre de paramètres contrôlables ---
+		if ( m_context->draw.m_showUI )
+		{
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.15f, io.DisplaySize.y * 0.54f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
+			ImGui::Begin( "BluePrint Settings" );
+
+			const char* shapeNames[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
+										 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
+			bool recreate = false;
+
+			bool lockChanged = false;
+			lockChanged |= ImGui::Checkbox( "Lock X", &m_motionLocks.linearX );
+			ImGui::SameLine();
+			lockChanged |= ImGui::Checkbox( "Lock Y", &m_motionLocks.linearY );
+			ImGui::SameLine();
+			lockChanged |= ImGui::Checkbox( "Lock Rot", &m_motionLocks.angularZ );
+
+			if ( ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f" ) )
+				recreate = true;
+			if ( ImGui::SliderFloat( "Spacing", &m_spacing, 0.5f, 5.0f, "%.2f" ) )
+				recreate = true;
+
+			bool physChanged = false;
+			physChanged |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.5f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
+			physChanged |= ImGui::Checkbox( "Bullet", &m_isBullet );
+
+			physChanged |= ImGui::SliderFloat( "Min Speed", &m_speedMin, 0.0f, 30.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Max Speed", &m_speedMax, 0.0f, 30.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Min Ang Vel", &m_angVelMin, -50.0f, 0.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Max Ang Vel", &m_angVelMax, 0.0f, 50.0f, "%.2f" );
+
+			if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.0f%%" ) )
+				m_audioManager.SetVolume( m_soundVolume );
+			ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents );
+
+			ImGui::Separator();
+			bool cageChanged = false;
+			cageChanged |= ImGui::SliderInt( "Segments par cage", &m_cageSegments, 4, 128 );
+			cageChanged |= ImGui::SliderFloat( "Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f" );
+			cageChanged |= ImGui::SliderFloat( "Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
+			ImGui::End();
+
+			if ( recreate || lockChanged || physChanged || cageChanged )
+				CreateBodies();
+		}
+
+		// --- HUD titre PROJECTILES (toujours visible, centré, ombre douce) ---
+		{
+			ImFont* titleFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+			const char* title = "PROJECTILES";
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::PushFont( titleFont );
+			ImVec2 ts = ImGui::CalcTextSize( title );
+			ImGui::PopFont();
+
+			float padX = ts.x * 0.2f;
+			float padY = ts.y * 0.5f;
+			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
+
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.17f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+			ImGui::Begin( "##HUDTitleOmbre", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
+
+			// Ombre douce (décalage +1.5, alpha 80)
+			dl->AddText( titleFont, titleFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 80 ), title );
+			// Texte principal blanc légèrement adouci (alpha 230)
+			dl->AddText( titleFont, titleFont->FontSize, tp, IM_COL32( 255, 255, 255, 230 ), title );
+
+			ImGui::End();
+		}
+
+		// --- HUD compteur de projectiles (toujours visible, sous le titre) ---
+		{
+			ImFont* largeFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+			std::string countText = std::to_string( m_projectileCount );
+
+			ImGui::PushFont( largeFont );
+			ImVec2 countSize = ImGui::CalcTextSize( countText.c_str() );
+			ImGui::PopFont();
+
+			const float padX = 40.0f;
+			const float padY = 25.0f;
+			ImVec2 winSize( countSize.x + padX * 2, countSize.y + padY * 2 );
+
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.22f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+									 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::Begin( "##HUDCountOmbre", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+			ImVec2 tp( wp.x + ( ws.x - countSize.x ) * 0.5f, wp.y + ( ws.y - countSize.y ) * 0.5f );
+
+			dl->AddText( largeFont, largeFont->FontSize, ImVec2( tp.x + 2.0f, tp.y + 2.0f ), IM_COL32( 0, 0, 0, 100 ),
+						 countText.c_str() );
+			dl->AddText( largeFont, largeFont->FontSize, tp, IM_COL32( 255, 255, 255, 240 ), countText.c_str() );
+
+			ImGui::End();
+		}
+	}
+
+private:
+	// Audio
+	AudioManager m_audioManager;
+	float m_soundVolume;
+
+	// Physique
+	bool m_enableHitEvents;
+	b2MotionLocks m_motionLocks;
+	b2Vec2 m_gravity;
+	float m_linearDamping;
+	float m_angularDamping;
+	float m_gravityScale;
+	bool m_isBullet;
+	float m_restitution = 1.0f;
+	float m_friction = 0.0f;
+	float m_density = 1.0f;
+	float m_shapeSize = 1.0f;
+	float m_spacing = 1.0f;
+	// Nouvelles plages pour la vélocité
+	float m_speedMin = 5.0f, m_speedMax = 5.0f;
+	float m_angVelMin = -10.0f, m_angVelMax = 10.0f;
+
+	// Équipes
+	ShapeConfig m_shapes[2] = { { e_circleShape, 0xE53F3F }, { e_boxShape, 0x3F6FE5 } };
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_shapeColorMap;
+
+	// Cage
+	float m_cageThickness = 0.25f;
+	float m_cageMotorSpeed = 0.0f;
+	int m_cageSegments = 50;
+	std::vector<b2BodyId> m_cageBodies;
+	// compteur de projectiles
+	int m_projectileCount = 0;
+
+	// Projectiles
+	std::vector<b2BodyId> m_bodies;
+
+	// Segments → couleur d’origine
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_segmentOriginalColor;
+
+	// Gestion duplication/génération
+	std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual> m_alreadyDuplicated;
+	std::unordered_map<b2ShapeId, int, b2ShapeIdHash, b2ShapeIdEqual> m_generationLevel;
+
+	// Ensemble des segments actuellement touchés par chaque projectile
+	std::unordered_map<b2ShapeId, TouchSet, b2ShapeIdHash, b2ShapeIdEqual> m_touchingSegments;
+
+	// Audio init
+	void InitializeAudio()
+	{
+		std::filesystem::path p = "data/audio/Ticks";
+		if ( !std::filesystem::exists( p ) )
+			p = "D:/Sound & Fx/audio/Ticks";
+		m_audioManager.LoadFromDirectory( p.string() );
+		m_audioManager.SetVolume( m_soundVolume );
+	}
+
+	// Centralise la création d’un projectile (utilisé partout)
+	void CreateProjectile( const b2Vec2& pos, int genLevel )
+	{
+		float speed = RandomFloatRange( m_speedMin, m_speedMax );
+		float angle = RandomFloatRange( -b2_pi, b2_pi );
+
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = pos;
+		bd.linearVelocity = { speed * std::cos( angle ), speed * std::sin( angle ) };
+		bd.angularVelocity = RandomFloatRange( m_angVelMin, m_angVelMax );
+		bd.motionLocks = m_motionLocks;
+		bd.linearDamping = m_linearDamping;
+		bd.angularDamping = m_angularDamping;
+		bd.gravityScale = m_gravityScale;
+		bd.isBullet = m_isBullet;
+
+		b2BodyId body = b2CreateBody( m_worldId, &bd );
+		m_bodies.push_back( body );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.density = m_density;
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.restitution = m_restitution;
+		sd.material.friction = m_friction;
+		sd.material.customColor = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
+								  ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) |
+								  uint32_t( RandomFloatRange( 0, 1 ) * 255 );
+		sd.isSensor = true;
+		sd.enableSensorEvents = true;
+		sd.enableHitEvents = true;
+
+		b2Circle c{ { 0.0f, 0.0f }, 0.5f * m_shapeSize };
+		b2ShapeId sid = b2CreateCircleShape( body, &sd, &c );
+		m_shapeColorMap[sid] = sd.material.customColor;
+		m_generationLevel[sid] = genLevel;
+		m_projectileCount++;
+	}
+
+	// Cage sensor
+	b2BodyId CreateFullCage( b2WorldId worldId, float radius, float thickness, int segCount, float speed )
+	{
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = { 0.0f, 0.0f };
+		b2BodyId cage = b2CreateBody( worldId, &bd );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.friction = 0.1f;
+		sd.material.customColor = 0x44FFD5;
+		sd.isSensor = true;
+		sd.enableSensorEvents = true;
+
+		float dAng = 2.0f * b2_pi / segCount;
+		for ( int i = 0; i < segCount; ++i )
+		{
+			float a0 = i * dAng;
+			float a1 = ( i + 1 ) * dAng;
+
+			b2Vec2 p0 = { radius * std::cos( a0 ), radius * std::sin( a0 ) };
+			b2Vec2 p1 = { radius * std::cos( a1 ), radius * std::sin( a1 ) };
+			b2Vec2 c = 0.5f * ( p0 + p1 );
+			float ang = std::atan2( p1.y - p0.y, p1.x - p0.x );
+			float len = b2Distance( p0, p1 );
+
+			b2Polygon rect = b2MakeOffsetBox( 0.5f * len, 0.5f * thickness, c, b2MakeRot( ang ) );
+			b2ShapeId sid = b2CreatePolygonShape( cage, &sd, &rect );
+			m_segmentOriginalColor[sid] = sd.material.customColor;
+		}
+
+		b2BodyDef pivotDef;
+		pivotDef = b2DefaultBodyDef();
+		pivotDef.position = { 0.0f, 0.0f };
+		b2BodyId pivot = b2CreateBody( worldId, &pivotDef );
+
+		b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
+		jd.base.bodyIdA = pivot;
+		jd.base.bodyIdB = cage;
+		jd.enableMotor = true;
+		jd.motorSpeed = speed;
+		jd.maxMotorTorque = 1e5f;
+		b2CreateRevoluteJoint( worldId, &jd );
+
+		return cage;
+	}
+
+	// Création bodies + reset duplications/overlap/génération
+	void CreateBodies()
+	{
+		m_alreadyDuplicated.clear();
+		m_generationLevel.clear();
+		m_touchingSegments.clear();
+		g_randomSeed = (uint32_t)std::time( nullptr );
+
+		for ( b2BodyId id : m_bodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_bodies.clear();
+
+		for ( b2BodyId id : m_cageBodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_cageBodies.clear();
+
+		m_shapeColorMap.clear();
+		m_segmentOriginalColor.clear();
+
+		// Cage sensor
+		float radius = 8.0f;
+		m_cageBodies.push_back( CreateFullCage( m_worldId, radius, m_cageThickness, m_cageSegments, m_cageMotorSpeed ) );
+
+		// 1 projectile central
+		m_shapes[0].color = ( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 16 ) |
+							( uint32_t( RandomFloatRange( 0, 1 ) * 255 ) << 8 ) | uint32_t( RandomFloatRange( 0, 1 ) * 255 );
+
+		m_projectileCount = 0; // Reset à chaque reset/simulation
+		CreateProjectile( { 0.0f, 0.0f }, 0 );
+		m_projectileCount++; // Incrémente ici
+	}
+};
+static int sampleCageDuplication = RegisterSample( "9:16", "CageDuplication", CageDuplication::Create );
+
+class CageDuplicationImageGuess : public Sample
+{
+public:
+	//---------------------------------------------------------------
+	// Types
+	//---------------------------------------------------------------
+	enum ShapeType
+	{
+		e_circleShape = 0,
+		e_capsuleShape,
+		e_boxShape,
+		e_polygon3,
+		e_polygon4,
+		e_polygon5,
+		e_polygon6,
+		e_polygon7,
+		e_polygon8,
+	};
+
+	struct ShapeConfig
+	{
+		ShapeType type;
+		uint32_t color;
+	};
+
+	struct b2ShapeIdHash
+	{
+		size_t operator()( const b2ShapeId& id ) const noexcept
+		{
+			return std::hash<uint64_t>()( b2StoreShapeId( id ) );
+		}
+	};
+	struct b2ShapeIdEqual
+	{
+		bool operator()( const b2ShapeId& a, const b2ShapeId& b ) const noexcept
+		{
+			return B2_ID_EQUALS( a, b );
+		}
+	};
+
+	using TouchSet = std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual>;
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new CageDuplicationImageGuess( context );
+	}
+
+	static constexpr uint32_t kDefaultColors[2] = { 0x00FF00, 0x00FF00 }; // Vert
+
+	//---------------------------------------------------------------
+	// Construction
+	//---------------------------------------------------------------
+	explicit CageDuplicationImageGuess( SampleContext* context )
+		: Sample( context )
+		, m_enableHitEvents( true )
+		, m_soundVolume( 50.0f )
+		, m_linearDamping( 0.5f )
+		, m_angularDamping( 0.2f )
+		, m_gravityScale( 0.0f )
+		, m_isBullet( false )
+		, m_gravity{ 0.0f, -10.0f }
+		, m_motionLocks{ false, false, false }
+		, m_angVelMin( -10.0f )
+		, m_angVelMax( 10.0f )
+		, m_speedMin( 4.5f )
+		, m_speedMax( 5.0f )
+	{
+		m_context->enableSleep = true;
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 25.0f;
+		}
+		b2World_SetGravity( m_worldId, m_gravity );
+		InitializeAudio();
+		CreateBodies();
+
+		// Les murs (verts)
+		{
+			float arenaHalfWidth = 14.0f;
+			float arenaHalfHeight = 25.0f;
+
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.material = b2DefaultSurfaceMaterial();
+			shapeDef.material.restitution = 1.0f;
+			shapeDef.material.friction = 0.0f;
+			shapeDef.material.customColor = 0x00FF00; // Vert
+
+			b2Segment bottomWall = { { -arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, -arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &bottomWall );
+
+			b2Segment topWall = { { -arenaHalfWidth, arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &topWall );
+
+			b2Segment leftWall = { { -arenaHalfWidth, -arenaHalfHeight }, { -arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &leftWall );
+
+			b2Segment rightWall = { { arenaHalfWidth, -arenaHalfHeight }, { arenaHalfWidth, arenaHalfHeight } };
+			b2CreateSegmentShape( groundId, &shapeDef, &rightWall );
+		}
+	}
+
+	//---------------------------------------------------------------
+	// Step
+	//---------------------------------------------------------------
+	void Step() override
+	{
+		Sample::Step();
+
+		b2SensorEvents events = b2World_GetSensorEvents( m_worldId );
+		const b2Vec2 spawnCenter{ 0.0f, 0.0f };
+
+		// --------------------------- BEGIN TOUCH -----------------------------
+		for ( int i = 0; i < events.beginCount; ++i )
+		{
+			const b2SensorBeginTouchEvent& e = events.beginEvents[i];
+
+			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
+				continue;
+			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
+				continue;
+
+			m_touchingSegments[e.visitorShapeId].insert( e.sensorShapeId );
+
+			uint32_t col = m_shapeColorMap[e.visitorShapeId];
+			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
+			mat.customColor = col;
+			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
+		}
+
+		// ---------------------------- END TOUCH ------------------------------
+		for ( int i = 0; i < events.endCount; ++i )
+		{
+			const b2SensorEndTouchEvent& e = events.endEvents[i];
+
+			if ( !m_shapeColorMap.count( e.visitorShapeId ) )
+				continue;
+			if ( !m_segmentOriginalColor.count( e.sensorShapeId ) )
+				continue;
+
+			auto& set = m_touchingSegments[e.visitorShapeId];
+			set.erase( e.sensorShapeId );
+
+			if ( set.empty() )
+			{
+				m_touchingSegments.erase( e.visitorShapeId );
+
+				if ( m_alreadyDuplicated.insert( e.visitorShapeId ).second )
+				{
+					int genLevel = m_generationLevel[e.visitorShapeId];
+					for ( int k = 0; k < 2; ++k )
+						CreateProjectile( spawnCenter, genLevel + 1 );
+
+					if ( m_enableHitEvents )
+						m_audioManager.PlaySpawnSound();
+				}
+			}
+
+			uint32_t baseCol = m_segmentOriginalColor[e.sensorShapeId];
+			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.sensorShapeId );
+			mat.customColor = baseCol;
+			b2Shape_SetSurfaceMaterial( e.sensorShapeId, mat );
+		}
+
+		// --------------------- Effets sonores (impacts physiques) ---------------------
+		if ( m_enableHitEvents )
+		{
+			b2ContactEvents evts = b2World_GetContactEvents( m_worldId );
+			for ( int i = 0; i < evts.hitCount; ++i )
+				m_audioManager.HandleHitEffect( evts.hitEvents[i].point, evts.hitEvents[i].approachSpeed, m_stepCount );
+		}
+		m_audioManager.PlayQueued();
+		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
+	}
+
+	//---------------------------------------------------------------
+	// GUI
+	//---------------------------------------------------------------
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+
+		// --- Fenêtre de paramètres contrôlables ---
+		if ( m_context->draw.m_showUI )
+		{
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.15f, io.DisplaySize.y * 0.54f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( ImVec2( 400, 0 ), ImGuiCond_Always );
+			ImGui::Begin( "BluePrint Settings" );
+
+			const char* shapeNames[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
+										 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
+			bool recreate = false;
+
+			bool lockChanged = false;
+			lockChanged |= ImGui::Checkbox( "Lock X", &m_motionLocks.linearX );
+			ImGui::SameLine();
+			lockChanged |= ImGui::Checkbox( "Lock Y", &m_motionLocks.linearY );
+			ImGui::SameLine();
+			lockChanged |= ImGui::Checkbox( "Lock Rot", &m_motionLocks.angularZ );
+
+			if ( ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f" ) )
+				recreate = true;
+			if ( ImGui::SliderFloat( "Spacing", &m_spacing, 0.5f, 5.0f, "%.2f" ) )
+				recreate = true;
+
+			bool physChanged = false;
+			physChanged |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.5f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
+			physChanged |= ImGui::Checkbox( "Bullet", &m_isBullet );
+
+			physChanged |= ImGui::SliderFloat( "Min Speed", &m_speedMin, 0.0f, 30.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Max Speed", &m_speedMax, 0.0f, 30.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Min Ang Vel", &m_angVelMin, -50.0f, 0.0f, "%.2f" );
+			physChanged |= ImGui::SliderFloat( "Max Ang Vel", &m_angVelMax, 0.0f, 50.0f, "%.2f" );
+
+			if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.0f%%" ) )
+				m_audioManager.SetVolume( m_soundVolume );
+			ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents );
+
+			ImGui::Separator();
+			bool cageChanged = false;
+			cageChanged |= ImGui::SliderInt( "Segments par cage", &m_cageSegments, 4, 128 );
+			cageChanged |= ImGui::SliderFloat( "Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f" );
+			cageChanged |= ImGui::SliderFloat( "Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
+			ImGui::End();
+
+			if ( recreate || lockChanged || physChanged || cageChanged )
+				CreateBodies();
+		}
+
+		// --- HUD titre (vert, centré, ombre douce) ---
+		{
+			ImFont* titleFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+			const char* title = "CAGEDUPLICATIONIMAGEGUESS";
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::PushFont( titleFont );
+			ImVec2 ts = ImGui::CalcTextSize( title );
+			ImGui::PopFont();
+
+			float padX = ts.x * 0.2f;
+			float padY = ts.y * 0.5f;
+			ImVec2 winSize( ts.x + padX * 2, ts.y + padY * 2 );
+
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.17f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+			ImGui::Begin( "##HUDTitleOmbre", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+			ImVec2 tp( wp.x + ( ws.x - ts.x ) * 0.5f, wp.y + ( ws.y - ts.y ) * 0.5f );
+
+			// Ombre douce (décalage +1.5, alpha 80)
+			dl->AddText( titleFont, titleFont->FontSize, ImVec2( tp.x + 1.5f, tp.y + 1.5f ), IM_COL32( 0, 0, 0, 80 ), title );
+			// Texte principal vert lumineux
+			dl->AddText( titleFont, titleFont->FontSize, tp, IM_COL32( 0, 255, 0, 230 ), title );
+
+			ImGui::End();
+		}
+
+		// --- HUD compteur de projectiles (vert, sous le titre) ---
+		{
+			ImFont* largeFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+			std::string countText = std::to_string( m_projectileCount );
+
+			ImGui::PushFont( largeFont );
+			ImVec2 countSize = ImGui::CalcTextSize( countText.c_str() );
+			ImGui::PopFont();
+
+			const float padX = 40.0f;
+			const float padY = 25.0f;
+			ImVec2 winSize( countSize.x + padX * 2, countSize.y + padY * 2 );
+
+			ImGui::SetNextWindowPos( ImVec2( io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.22f ), ImGuiCond_Always,
+									 ImVec2( 0.5f, 0.0f ) );
+			ImGui::SetNextWindowSize( winSize, ImGuiCond_Always );
+			ImGui::SetNextWindowBgAlpha( 0.0f );
+
+			ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+									 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground;
+
+			ImGui::Begin( "##HUDCountOmbre", nullptr, flags );
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			ImVec2 wp = ImGui::GetWindowPos();
+			ImVec2 ws = ImGui::GetWindowSize();
+			ImVec2 tp( wp.x + ( ws.x - countSize.x ) * 0.5f, wp.y + ( ws.y - countSize.y ) * 0.5f );
+
+			dl->AddText( largeFont, largeFont->FontSize, ImVec2( tp.x + 2.0f, tp.y + 2.0f ), IM_COL32( 0, 80, 0, 100 ),
+						 countText.c_str() );
+			dl->AddText( largeFont, largeFont->FontSize, tp, IM_COL32( 0, 255, 0, 240 ), countText.c_str() );
+
+			ImGui::End();
+		}
+	}
+
+private:
+	// Audio
+	AudioManager m_audioManager;
+	float m_soundVolume;
+
+	// Physique
+	bool m_enableHitEvents;
+	b2MotionLocks m_motionLocks;
+	b2Vec2 m_gravity;
+	float m_linearDamping;
+	float m_angularDamping;
+	float m_gravityScale;
+	bool m_isBullet;
+	float m_restitution = 1.0f;
+	float m_friction = 0.0f;
+	float m_density = 1.0f;
+	float m_shapeSize = 1.0f;
+	float m_spacing = 1.0f;
+	// Nouvelles plages pour la vélocité
+	float m_speedMin = 5.0f, m_speedMax = 5.0f;
+	float m_angVelMin = -10.0f, m_angVelMax = 10.0f;
+
+	// Équipes
+	ShapeConfig m_shapes[2] = { { e_circleShape, 0x00FF00 }, { e_boxShape, 0x00FF00 } };
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_shapeColorMap;
+
+	// Cage
+	float m_cageThickness = 1.0f;
+	float m_cageMotorSpeed = 0.0f;
+	int m_cageSegments = 50;
+	std::vector<b2BodyId> m_cageBodies;
+	// compteur de projectiles
+	int m_projectileCount = 0;
+
+	// Projectiles
+	std::vector<b2BodyId> m_bodies;
+
+	// Segments → couleur d’origine
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_segmentOriginalColor;
+
+	// Gestion duplication/génération
+	std::unordered_set<b2ShapeId, b2ShapeIdHash, b2ShapeIdEqual> m_alreadyDuplicated;
+	std::unordered_map<b2ShapeId, int, b2ShapeIdHash, b2ShapeIdEqual> m_generationLevel;
+
+	// Ensemble des segments actuellement touchés par chaque projectile
+	std::unordered_map<b2ShapeId, TouchSet, b2ShapeIdHash, b2ShapeIdEqual> m_touchingSegments;
+
+	// Audio init
+	void InitializeAudio()
+	{
+		std::filesystem::path p = "data/audio/Ticks";
+		if ( !std::filesystem::exists( p ) )
+			p = "D:/Sound & Fx/audio/Ticks";
+		m_audioManager.LoadFromDirectory( p.string() );
+		m_audioManager.SetVolume( m_soundVolume );
+	}
+
+	// Centralise la création d’un projectile (utilisé partout)
+	void CreateProjectile( const b2Vec2& pos, int genLevel )
+	{
+		float speed = RandomFloatRange( m_speedMin, m_speedMax );
+		float angle = RandomFloatRange( -b2_pi, b2_pi );
+
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = pos;
+		bd.linearVelocity = { speed * std::cos( angle ), speed * std::sin( angle ) };
+		bd.angularVelocity = RandomFloatRange( m_angVelMin, m_angVelMax );
+		bd.motionLocks = m_motionLocks;
+		bd.linearDamping = m_linearDamping;
+		bd.angularDamping = m_angularDamping;
+		bd.gravityScale = m_gravityScale;
+		bd.isBullet = m_isBullet;
+
+		b2BodyId body = b2CreateBody( m_worldId, &bd );
+		m_bodies.push_back( body );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.density = m_density;
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.restitution = m_restitution;
+		sd.material.friction = m_friction;
+		sd.material.customColor = 0x00FF00; // VERT pour projectiles
+		sd.isSensor = true;
+		sd.enableSensorEvents = true;
+		sd.enableHitEvents = true;
+
+		b2Circle c{ { 0.0f, 0.0f }, 0.5f * m_shapeSize };
+		b2ShapeId sid = b2CreateCircleShape( body, &sd, &c );
+		m_shapeColorMap[sid] = sd.material.customColor;
+		m_generationLevel[sid] = genLevel;
+		m_projectileCount++;
+	}
+
+	// Cage sensor
+	b2BodyId CreateFullCage( b2WorldId worldId, float radius, float thickness, int segCount, float speed )
+	{
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = { 0.0f, 0.0f };
+		b2BodyId cage = b2CreateBody( worldId, &bd );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.friction = 0.1f;
+		sd.material.customColor = 0x333333; // VERT pour la cage
+		sd.isSensor = true;
+		sd.enableSensorEvents = true;
+
+		float dAng = 2.0f * b2_pi / segCount;
+		for ( int i = 0; i < segCount; ++i )
+		{
+			float a0 = i * dAng;
+			float a1 = ( i + 1 ) * dAng;
+
+			b2Vec2 p0 = { radius * std::cos( a0 ), radius * std::sin( a0 ) };
+			b2Vec2 p1 = { radius * std::cos( a1 ), radius * std::sin( a1 ) };
+			b2Vec2 c = 0.5f * ( p0 + p1 );
+			float ang = std::atan2( p1.y - p0.y, p1.x - p0.x );
+			float len = b2Distance( p0, p1 );
+
+			b2Polygon rect = b2MakeOffsetBox( 0.5f * len, 0.5f * thickness, c, b2MakeRot( ang ) );
+			b2ShapeId sid = b2CreatePolygonShape( cage, &sd, &rect );
+			m_segmentOriginalColor[sid] = sd.material.customColor;
+		}
+
+		b2BodyDef pivotDef;
+		pivotDef = b2DefaultBodyDef();
+		pivotDef.position = { 0.0f, 0.0f };
+		b2BodyId pivot = b2CreateBody( worldId, &pivotDef );
+
+		b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
+		jd.base.bodyIdA = pivot;
+		jd.base.bodyIdB = cage;
+		jd.enableMotor = true;
+		jd.motorSpeed = speed;
+		jd.maxMotorTorque = 1e5f;
+		b2CreateRevoluteJoint( worldId, &jd );
+
+		return cage;
+	}
+
+	// Création bodies + reset duplications/overlap/génération
+	void CreateBodies()
+	{
+		m_alreadyDuplicated.clear();
+		m_generationLevel.clear();
+		m_touchingSegments.clear();
+		g_randomSeed = (uint32_t)std::time( nullptr );
+
+		for ( b2BodyId id : m_bodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_bodies.clear();
+
+		for ( b2BodyId id : m_cageBodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_cageBodies.clear();
+
+		m_shapeColorMap.clear();
+		m_segmentOriginalColor.clear();
+
+		// Cage sensor
+		float radius = 8.0f;
+		m_cageBodies.push_back( CreateFullCage( m_worldId, radius, m_cageThickness, m_cageSegments, m_cageMotorSpeed ) );
+
+		// 1 projectile central
+		m_shapes[0].color = 0x00FF00; // vert
+
+		m_projectileCount = 0; // Reset à chaque reset/simulation
+		CreateProjectile( { 0.0f, 0.0f }, 0 );
+		m_projectileCount++; // Incrémente ici
+	}
+};
+
+static int sampleCageDuplicationImageGuess = RegisterSample( "9:16", "CageDuplicationImageGuess", CageDuplicationImageGuess::Create );
+
+
+class CageEscape : public Sample
+{
+public:
+	struct CageHoleSensorData
+	{
+		int cageIndex;
+		b2BodyId cageBody;
+	};
+	static Sample* Create( SampleContext* context )
+	{
+		return new CageEscape( context );
+	}
+
+	enum ShapeType
+	{
+		e_circleShape = 0,
+		e_capsuleShape,
+		e_boxShape,
+		e_polygon3,
+		e_polygon4,
+		e_polygon5,
+		e_polygon6,
+		e_polygon7,
+		e_polygon8
+	};
+
+	explicit CageEscape( SampleContext* context )
+		: Sample( context )
+		, m_shapeType( e_boxShape )
+		, m_enableHitEvents( true )
+		, m_soundVolume( 50.0f )
+		, m_linearDamping( 0.0f )
+		, m_angularDamping( 0.0f )
+		, m_gravityScale( 1.0f )
+		, m_isBullet( false )
+		, m_gravity{ 0.0f, -10.0f }
+		, m_motionLocks{ false, false, false }
+	{
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 20.0f;
+		}
+		b2World_SetGravity( m_worldId, m_gravity );
+		InitializeAudio();
+
+		CreateBodies();
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		b2SensorEvents sensorEvents = b2World_GetSensorEvents( m_worldId );
+
+		// --- Marquer les cages à détruire ---
+		std::set<b2BodyId> cagesToDestroy;
+
+		for ( int i = 0; i < sensorEvents.beginCount; ++i )
+		{
+			b2SensorBeginTouchEvent* event = sensorEvents.beginEvents + i;
+
+			// On traite uniquement les sensors "trou de cage"
+			auto* data = static_cast<CageHoleSensorData*>( b2Shape_GetUserData( event->sensorShapeId ) );
+			if ( data )
+			{
+				b2BodyId visitorBody = b2Shape_GetBody( event->visitorShapeId );
+
+				// FILTRE : seules les bodies dynamiques de la grille peuvent détruire la cage
+				auto it = std::find_if( m_bodies.begin(), m_bodies.end(),
+										[visitorBody]( const b2BodyId& id ) { return B2_ID_EQUALS( id, visitorBody ); } );
+				if ( it != m_bodies.end() )
+				{
+					cagesToDestroy.insert( data->cageBody );
+				}
+			}
+
+			// Coloration lime des shapes dynamiques traversant le sensor (facultatif)
+			if ( b2Shape_IsValid( event->visitorShapeId ) )
+			{
+				b2SurfaceMaterial material = b2Shape_GetSurfaceMaterial( event->visitorShapeId );
+				material.customColor = b2_colorLime;
+				b2Shape_SetSurfaceMaterial( event->visitorShapeId, material );
+			}
+		}
+
+		// Remet la couleur à zéro quand on quitte le sensor
+		for ( int i = 0; i < sensorEvents.endCount; ++i )
+		{
+			b2SensorEndTouchEvent* event = sensorEvents.endEvents + i;
+			if ( b2Shape_IsValid( event->visitorShapeId ) )
+			{
+				b2SurfaceMaterial material = b2Shape_GetSurfaceMaterial( event->visitorShapeId );
+				material.customColor = 0;
+				b2Shape_SetSurfaceMaterial( event->visitorShapeId, material );
+			}
+		}
+
+		// --- Détruire les cages marquées ---
+		for ( b2BodyId cageId : cagesToDestroy )
+		{
+			if ( B2_IS_NON_NULL( cageId ) )
+			{
+				b2DestroyBody( cageId );
+
+				// Nettoyage du vector m_cageBodies
+				auto it = std::find_if( m_cageBodies.begin(), m_cageBodies.end(),
+										[cageId]( const b2BodyId& id ) { return B2_ID_EQUALS( id, cageId ); } );
+				if ( it != m_cageBodies.end() )
+					m_cageBodies.erase( it );
+			}
+		}
+
+		// --- reste de Step inchangé ---
+		if ( m_enableHitEvents )
+		{
+			b2ContactEvents events = b2World_GetContactEvents( m_worldId );
+			for ( int i = 0; i < events.hitCount; ++i )
+			{
+				m_audioManager.HandleHitEffect( events.hitEvents[i].point, events.hitEvents[i].approachSpeed, m_stepCount );
+			}
+		}
+
+		m_audioManager.PlayQueued();
+		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
+	}
+
+	void UpdateGui() override
+{
+    if (!m_context->draw.m_showUI)
+        return;
+
+    ImGuiIO& io = ImGui::GetIO();
+	ImVec2 pos = ImVec2( io.DisplaySize.x * 0.22f, io.DisplaySize.y * 0.62f );
+	ImGui::SetNextWindowPos( pos, ImGuiCond_Always, ImVec2( 0.5f, 0.5f ) );
+    ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_Always);
+
+    ImGui::Begin("BluePrint Settings");
+
+    // --- Sélection du type de forme ---
+    const char* shapeNames[] = { "Circle", "Capsule", "Box", "Triangle", "Quad",
+                                 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
+    int shapeIndex = static_cast<int>(m_shapeType);
+    if (ImGui::Combo("Shape Type", &shapeIndex, shapeNames, IM_ARRAYSIZE(shapeNames)))
+    {
+        m_shapeType = static_cast<ShapeType>(shapeIndex);
+        CreateBodies();
+    }
+    if (ImGui::SliderInt("Shape Count", &m_shapeCount, 1, 50))
+        CreateBodies();
+    ImGui::Text("Locks:");
+    bool changed = false;
+    changed |= ImGui::Checkbox("Lock X", &m_motionLocks.linearX);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Lock Y", &m_motionLocks.linearY);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Lock Rotation (Z)", &m_motionLocks.angularZ);
+
+    if (changed)
+        CreateBodies();
+
+    if (ImGui::SliderFloat("Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f"))
+        CreateBodies();
+    if (ImGui::SliderFloat("Spacing", &m_spacing, 0.5f, 5.0f, "%.2f"))
+        CreateBodies();
+
+    // --- Paramètres physiques sliders ---
+    bool needUpdateBodies = false;
+    needUpdateBodies |= ImGui::SliderFloat("Restitution", &m_restitution, 0.0f, 1.5f, "%.2f");
+    needUpdateBodies |= ImGui::SliderFloat("Friction", &m_friction, 0.0f, 1.0f, "%.2f");
+    needUpdateBodies |= ImGui::SliderFloat("Density", &m_density, 0.01f, 10.0f, "%.2f");
+    needUpdateBodies |= ImGui::SliderFloat("Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f");
+    needUpdateBodies |= ImGui::SliderFloat("Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f");
+    needUpdateBodies |= ImGui::SliderFloat("Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f");
+    needUpdateBodies |= ImGui::Checkbox("Bullet", &m_isBullet);
+
+    if (needUpdateBodies)
+        CreateBodies();
+
+    // Contrôle du volume sonore
+    if (ImGui::SliderFloat("Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.1f%%"))
+        m_audioManager.SetVolume(m_soundVolume);
+
+    ImGui::Checkbox("Enable Hit Events", &m_enableHitEvents);
+
+    // --- Bloc gravité ---
+    static const char* gravityPresets[] = { "Terre", "Lune", "Mars", "0", "Reverse", "Max" };
+    static float presetValues[] = { -10.0f, -1.62f, -3.71f, 0.0f, 10.0f, -980.0f }; // -980 = ~100g
+    static int presetIdx = 0;
+
+    if (ImGui::Combo("Gravity Preset", &presetIdx, gravityPresets, IM_ARRAYSIZE(gravityPresets)))
+    {
+        m_gravity = { 0.0f, presetValues[presetIdx] };
+        b2World_SetGravity(m_worldId, m_gravity);
+        // Optionnel : tu peux mettre à jour les bodies si nécessaire ici :
+        // CreateBodies();
+    }
+
+    ImGui::Text("Preset: %s", gravityPresets[presetIdx]);
+
+    ImGui::Separator();
+    ImGui::Text("Cages settings");
+    bool updateCages = false;
+    updateCages |= ImGui::SliderFloat("Rayon de base des cages", &m_baseRadius, 2.0f, 10.0f, "%.2f");
+    updateCages |= ImGui::SliderInt("Nombre de cages", &m_cageCount, 1, 50);
+    updateCages |= ImGui::SliderInt("Segments par cage", &m_cageSegments, 4, 128);
+    updateCages |= ImGui::SliderFloat("Espacement cages", &m_cageSpacing, 0.05f, 5.0f, "%.2f");
+    updateCages |= ImGui::SliderFloat("Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f");
+    updateCages |= ImGui::SliderFloat("Angle du trou (deg)", &m_holeAngle, 0.0f, 180.0f, "%.1f");
+    updateCages |= ImGui::SliderFloat("Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s");
+    if (updateCages)
+        CreateBodies();
+
+    ImGui::End();
+}
+
+
+private:
+	// --- Audio ---
+	AudioManager m_audioManager;
+	float m_soundVolume;
+
+	// --- Physics ---
+	ShapeType m_shapeType;
+	bool m_enableHitEvents;
+	b2MotionLocks m_motionLocks;
+	b2Vec2 m_gravity;
+
+	float m_linearDamping;
+	float m_angularDamping;
+	float m_gravityScale;
+	bool m_isBullet;
+
+	float m_restitution = 1.0f;
+	float m_friction = 0.0f;
+	float m_density = 1.0f;
+	float m_shapeSize = 2.0f;
+	float m_spacing = 1.0f;
+
+	// --- Shapes ---
+	std::vector<b2BodyId> m_bodies;
+	int m_shapeCount = 2;
+
+	// --- Cages imbriquées ---
+	int m_cageCount = 30;
+	float m_cageSpacing = 0.05f;
+	float m_baseRadius = 8.0f;
+	float m_cageThickness = 1.3f;
+	float m_holeAngle = 45.0f;			// en degrés
+	std::vector<b2BodyId> m_cageBodies; // Pour suivre/détruire les cages
+	float m_cageMotorSpeed = 0.5f;		// en radians/seconde
+	int m_cageSegments = 32;			// valeur par défaut, typiquement entre 12 et 64
+
+	// --- Catégories collision ---
+	static constexpr uint16_t CATEGORY_SHAPE = 0x0002;
+	static constexpr uint16_t CATEGORY_SENSOR = 0x0004;
+	static constexpr uint16_t CATEGORY_CAGE = 0x0008;
+
+	uint32_t ComputeEllipticColor( int ix, int iy, int cols, int rows )
+	{
+		float cx = ( cols - 1 ) * 0.5f;
+		float cy = ( rows - 1 ) * 0.5f;
+		float dx = static_cast<float>( ix ) - cx;
+		float dy = static_cast<float>( iy ) - cy;
+		float a = std::max( cx, 1.0f );
+		float b = std::max( cy, 1.0f );
+		float r = std::sqrt( ( dx * dx ) / ( a * a ) + ( dy * dy ) / ( b * b ) );
+		r = std::clamp( r / std::sqrt( 2.0f ), 0.0f, 1.0f );
+		float hue = r;
+		return HSVtoRGB( hue, 0.75f, 1.0f );
+	}
+
+	uint32_t HSVtoRGB( float h, float s, float v )
+	{
+		float r, g, b;
+		int i = int( h * 6.0f );
+		float f = h * 6.0f - i;
+		float p = v * ( 1.0f - s );
+		float q = v * ( 1.0f - f * s );
+		float t = v * ( 1.0f - ( 1.0f - f ) * s );
+		switch ( i % 6 )
+		{
+			case 0:
+				r = v, g = t, b = p;
+				break;
+			case 1:
+				r = q, g = v, b = p;
+				break;
+			case 2:
+				r = p, g = v, b = t;
+				break;
+			case 3:
+				r = p, g = q, b = v;
+				break;
+			case 4:
+				r = t, g = p, b = v;
+				break;
+			case 5:
+				r = v, g = p, b = q;
+				break;
+		}
+		uint32_t R = uint32_t( r * 255.0f );
+		uint32_t G = uint32_t( g * 255.0f );
+		uint32_t B = uint32_t( b * 255.0f );
+		return ( R << 16 ) | ( G << 8 ) | B;
+	}
+
+	void InitializeAudio()
+	{
+		std::filesystem::path path = "data/audio/Ticks";
+		if ( !std::filesystem::exists( path ) )
+			path = "D:/Sound & Fx/audio/Ticks";
+		m_audioManager.LoadFromDirectory( path.string() );
+		m_audioManager.SetVolume( m_soundVolume );
+	}
+
+	b2BodyId CreateRotatingCageWithHole( b2WorldId worldId, float radius, float thickness, float holeAngle, int segmentCount,
+										 float motorSpeed )
+	{
+		// Corps central de la cage
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		bodyDef.type = b2_dynamicBody;
+		bodyDef.position = { 0.0f, 0.0f };
+		b2BodyId cageBody = b2CreateBody( worldId, &bodyDef );
+
+		// --- Création des "murs" de la cage ---
+		float twoPi = 2.0f * b2_pi;
+		float segmentArc = ( twoPi - holeAngle ) / segmentCount;
+		float startAngle = -b2_pi / 2.0f + holeAngle * 0.5f;
+
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.material = b2DefaultSurfaceMaterial();
+		shapeDef.material.friction = 0.1f;
+		shapeDef.material.restitution = 0.0f;
+		shapeDef.material.customColor = 0x44FFD5;
+
+		// --- Catégorie/Masque : CAGE ---
+		shapeDef.filter.categoryBits = CATEGORY_CAGE; // Marque ce shape comme "cage"
+		shapeDef.filter.maskBits = CATEGORY_SHAPE;	  // Il collisionne seulement avec les shapes dynamiques
+
+		for ( int i = 0; i < segmentCount; ++i )
+		{
+			float angleA = startAngle + i * segmentArc;
+			float angleB = startAngle + ( i + 1 ) * segmentArc;
+			b2Vec2 pA = { radius * std::cos( angleA ), radius * std::sin( angleA ) };
+			b2Vec2 pB = { radius * std::cos( angleB ), radius * std::sin( angleB ) };
+			b2Capsule capsule = { pA, pB, thickness * 0.5f };
+			b2CreateCapsuleShape( cageBody, &shapeDef, &capsule );
+		}
+
+		// --- Création des sensors pour le trou ---
+		int holeSensorCount = std::max( 1, int( std::ceil( segmentCount * ( holeAngle / ( twoPi - holeAngle ) ) ) ) );
+		float sensorArc = holeAngle / holeSensorCount;
+		float sensorStartAngle = -b2_pi / 2.0f - holeAngle * 0.5f;
+
+		for ( int i = 0; i < holeSensorCount; ++i )
+		{
+			float angleA = sensorStartAngle + i * sensorArc;
+			float angleB = sensorStartAngle + ( i + 1 ) * sensorArc;
+
+			b2Vec2 pA = { radius * std::cos( angleA ), radius * std::sin( angleA ) };
+			b2Vec2 pB = { radius * std::cos( angleB ), radius * std::sin( angleB ) };
+
+			b2ShapeDef sensorDef = b2DefaultShapeDef();
+			sensorDef.isSensor = true;
+			sensorDef.enableSensorEvents = true;
+			sensorDef.material.customColor = 0xFF0088;
+
+			// --- Catégorie/Masque : SENSOR ---
+			sensorDef.filter.categoryBits = CATEGORY_SENSOR; // "Sensor"
+			sensorDef.filter.maskBits = CATEGORY_SHAPE;		 // Ne détecte que les shapes dynamiques
+
+			// User data pour retrouver la cage à détruire
+			CageHoleSensorData* data = new CageHoleSensorData;
+			data->cageIndex = i;
+			data->cageBody = cageBody;
+			sensorDef.userData = data;
+
+			b2Capsule holeSensorCapsule = { pA, pB, thickness * 0.4f };
+			b2CreateCapsuleShape( cageBody, &sensorDef, &holeSensorCapsule );
+		}
+
+		// Fixe la cage sur pivot
+		b2BodyDef pivotDef = b2DefaultBodyDef();
+		pivotDef.position = { 0.0f, 0.0f };
+		b2BodyId pivotId = b2CreateBody( worldId, &pivotDef );
+
+		b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
+		b2Vec2 pivot = { 0.0f, 0.0f };
+		jointDef.base.bodyIdA = pivotId;
+		jointDef.base.bodyIdB = cageBody;
+		jointDef.base.localFrameA.p = b2Body_GetLocalPoint( jointDef.base.bodyIdA, pivot );
+		jointDef.base.localFrameB.p = b2Body_GetLocalPoint( jointDef.base.bodyIdB, pivot );
+		jointDef.enableMotor = true;
+		jointDef.motorSpeed = motorSpeed;
+		jointDef.maxMotorTorque = 1e5f;
+		b2CreateRevoluteJoint( worldId, &jointDef );
+
+		return cageBody;
+	}
+
+	void CreateBodies()
+	{
+		// Détruit les bodies "shapes" précédents
+		for ( b2BodyId id : m_bodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_bodies.clear();
+
+		// Détruit les cages précédentes
+		for ( b2BodyId id : m_cageBodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_cageBodies.clear();
+
+		// --- Création dynamique des cages imbriquées ---
+		float baseRadius = m_baseRadius;
+		for ( int i = 0; i < m_cageCount; ++i )
+		{
+			float radius = baseRadius + i * ( m_cageThickness + m_cageSpacing );
+			int segmentCount = m_cageSegments;
+			float holeAngleRad = m_holeAngle * b2_pi / 180.0f;
+			b2BodyId cageId =
+				CreateRotatingCageWithHole( m_worldId, radius, m_cageThickness, holeAngleRad, segmentCount, m_cageMotorSpeed );
+			m_cageBodies.push_back( cageId );
+		}
+
+		// --- Création des bodies "shapes" (les projectiles/dynamiques de la grille) ---
+		int n = m_shapeCount;
+		int cols = int( std::ceil( std::sqrt( n ) ) );
+		int rows = ( n + cols - 1 ) / cols;
+		float dx = m_spacing;
+		float dy = m_spacing;
+		float totalW = dx * ( cols - 1 );
+		float totalH = dy * ( rows - 1 );
+		float startX = -totalW * 0.5f;
+		float startY = totalH * 0.5f;
+
+		for ( int i = 0; i < n; ++i )
+		{
+			int ix = i % cols;
+			int iy = i / cols;
+			float x = startX + ix * dx;
+			float y = startY - iy * dy;
+
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			bodyDef.type = b2_dynamicBody;
+			bodyDef.position = { x, y };
+			bodyDef.linearVelocity = { 0.0f, -10.0f };
+			bodyDef.motionLocks = m_motionLocks;
+			bodyDef.linearDamping = m_linearDamping;
+			bodyDef.angularDamping = m_angularDamping;
+			bodyDef.gravityScale = m_gravityScale;
+			bodyDef.isBullet = m_isBullet;
+
+			b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+			m_bodies.push_back( bodyId );
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.enableSensorEvents = true;
+			shapeDef.density = m_density;
+			shapeDef.material = b2DefaultSurfaceMaterial();
+			shapeDef.material.restitution = m_restitution;
+			shapeDef.material.friction = m_friction;
+			shapeDef.enableHitEvents = true;
+			shapeDef.material.customColor = ComputeEllipticColor( ix, iy, cols, rows );
+
+			// --- Catégorie/Masque : SHAPE (projectile dynamique) ---
+			shapeDef.filter.categoryBits = CATEGORY_SHAPE;
+			shapeDef.filter.maskBits = CATEGORY_SENSOR | CATEGORY_CAGE; // Collisionne avec cages, détecté par sensors
+
+			ShapeType shapeType = static_cast<ShapeType>( m_shapeType );
+
+			if ( shapeType == e_circleShape )
+			{
+				b2Circle circle = { { 0.0f, 0.0f }, 0.5f * m_shapeSize };
+				b2CreateCircleShape( bodyId, &shapeDef, &circle );
+			}
+			else if ( shapeType == e_capsuleShape )
+			{
+				b2Capsule capsule = { { -0.5f * m_shapeSize, 0.0f }, { 0.5f * m_shapeSize, 0.0f }, 0.25f * m_shapeSize };
+				b2CreateCapsuleShape( bodyId, &shapeDef, &capsule );
+			}
+			else if ( shapeType == e_boxShape )
+			{
+				b2Polygon box = b2MakeBox( 0.5f * m_shapeSize, 0.5f * m_shapeSize );
+				b2CreatePolygonShape( bodyId, &shapeDef, &box );
+			}
+			else // Polygones réguliers 3-8 côtés
+			{
+				int sides = int( shapeType ) - int( e_polygon3 ) + 3;
+				std::vector<b2Vec2> verts( sides );
+				const float R = 0.5f * m_shapeSize;
+				const float twoPi = 2.0f * b2_pi;
+				for ( int j = 0; j < sides; ++j )
+					verts[j] = { std::cos( j * twoPi / sides ) * R, std::sin( j * twoPi / sides ) * R };
+				b2Hull hull = b2ComputeHull( verts.data(), sides );
+				if ( hull.count > 0 )
+				{
+					b2Polygon poly = b2MakePolygon( &hull, 0 );
+					b2CreatePolygonShape( bodyId, &shapeDef, &poly );
+				}
+			}
+		}
+	}
+};
+
+static int sampleCageEscape = RegisterSample( "9:16", "CageEscape", CageEscape::Create );
+
+class CageDuel : public Sample
+{
+public:
+	//---------------------------------------------------------------
+	// Types
+	//---------------------------------------------------------------
+
+	enum ShapeType
+	{
+		e_circleShape = 0,
+		e_capsuleShape,
+		e_boxShape,
+		e_polygon3,
+		e_polygon4,
+		e_polygon5,
+		e_polygon6,
+		e_polygon7,
+		e_polygon8,
+	};
+
+	struct ShapeConfig
+	{
+		ShapeType type;
+		uint32_t color;
+	};
+
+	struct b2ShapeIdHash
+	{
+		size_t operator()( const b2ShapeId& id ) const noexcept
+		{
+			return std::hash<uint64_t>()( b2StoreShapeId( id ) );
+		}
+	};
+
+	struct b2ShapeIdEqual
+	{
+		bool operator()( const b2ShapeId& a, const b2ShapeId& b ) const noexcept
+		{
+			return B2_ID_EQUALS( a, b );
+		}
+	};
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new CageDuel( context );
+	}
+
+	static constexpr uint32_t kDefaultColors[2] = { 0xE53F3F, 0x3F6FE5 };
+
+	//---------------------------------------------------------------
+	// Construction
+	//---------------------------------------------------------------
+
+	explicit CageDuel( SampleContext* context )
+		: Sample( context )
+		, m_enableHitEvents( true )
+		, m_soundVolume( 50.0f )
+		, m_linearDamping( 0.0f )
+		, m_angularDamping( 0.0f )
+		, m_gravityScale( 1.0f )
+		, m_isBullet( false )
+		, m_gravity{ 0.0f, -10.0f }
+		, m_motionLocks{ false, false, false }
+	{
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 20.0f;
+		}
+
+		b2World_SetGravity( m_worldId, m_gravity );
+		InitializeAudio();
+		CreateBodies();
+	}
+
+	//---------------------------------------------------------------
+	// Step
+	//---------------------------------------------------------------
+
+	void Step() override
+	{
+		Sample::Step();
+
+		b2ContactEvents evts = b2World_GetContactEvents( m_worldId );
+
+		for ( int i = 0; i < evts.beginCount; ++i )
+		{
+			const b2ContactBeginTouchEvent& e = evts.beginEvents[i];
+
+			bool aIsProj = m_shapeColorMap.count( e.shapeIdA );
+			bool bIsProj = m_shapeColorMap.count( e.shapeIdB );
+			bool aIsSeg = m_segmentOriginalColor.count( e.shapeIdA );
+			bool bIsSeg = m_segmentOriginalColor.count( e.shapeIdB );
+
+			if ( aIsProj && bIsSeg )
+			{
+				uint32_t col = m_shapeColorMap[e.shapeIdA];
+				b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.shapeIdB );
+				mat.customColor = col;
+				b2Shape_SetSurfaceMaterial( e.shapeIdB, mat );
+			}
+			else if ( bIsProj && aIsSeg )
+			{
+				uint32_t col = m_shapeColorMap[e.shapeIdB];
+				b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( e.shapeIdA );
+				mat.customColor = col;
+				b2Shape_SetSurfaceMaterial( e.shapeIdA, mat );
+			}
+		}
+
+		if ( m_enableHitEvents )
+		{
+			for ( int i = 0; i < evts.hitCount; ++i )
+				m_audioManager.HandleHitEffect( evts.hitEvents[i].point, evts.hitEvents[i].approachSpeed, m_stepCount );
+		}
+		m_audioManager.PlayQueued();
+		m_audioManager.DrawHitEffects( &m_context->draw, m_stepCount );
+	}
+
+	//---------------------------------------------------------------
+	// GUI
+	//---------------------------------------------------------------
+
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+		ImVec2 center = { io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f };
+
+		ImGui::SetNextWindowPos( center, ImGuiCond_Always, { 0.5f, 0.5f } );
+		ImGui::SetNextWindowSize( { 400, 0 }, ImGuiCond_Always );
+
+		ImGui::Begin( "BluePrint Settings" );
+
+		const char* shapeNames[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
+									 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
+		bool recreate = false;
+
+		for ( int team = 0; team < 2; ++team )
+		{
+			ImGui::PushID( team );
+			int idx = static_cast<int>( m_shapes[team].type );
+			if ( ImGui::Combo( team == 0 ? "Team A" : "Team B", &idx, shapeNames, IM_ARRAYSIZE( shapeNames ) ) )
+			{
+				m_shapes[team].type = static_cast<ShapeType>( idx );
+				recreate = true;
+			}
+
+			float col[3] = { ( ( m_shapes[team].color >> 16 ) & 0xFF ) / 255.0f,
+							 ( ( m_shapes[team].color >> 8 ) & 0xFF ) / 255.0f, ( m_shapes[team].color & 0xFF ) / 255.0f };
+
+			if ( ImGui::ColorEdit3( "##col", col, ImGuiColorEditFlags_NoInputs ) )
+			{
+				m_shapes[team].color =
+					( (uint32_t)( col[0] * 255 ) << 16 ) | ( (uint32_t)( col[1] * 255 ) << 8 ) | (uint32_t)( col[2] * 255 );
+				recreate = true;
+			}
+			ImGui::PopID();
+		}
+
+		if ( ImGui::SliderInt( "Bodies / team", &m_shapeCountPerType, 1, 50 ) )
+			recreate = true;
+
+		bool lockChanged = false;
+		lockChanged |= ImGui::Checkbox( "Lock X", &m_motionLocks.linearX );
+		ImGui::SameLine();
+		lockChanged |= ImGui::Checkbox( "Lock Y", &m_motionLocks.linearY );
+		ImGui::SameLine();
+		lockChanged |= ImGui::Checkbox( "Lock Rot", &m_motionLocks.angularZ );
+
+		if ( ImGui::SliderFloat( "Shape Size", &m_shapeSize, 0.1f, 5.0f, "%.2f" ) )
+			recreate = true;
+		if ( ImGui::SliderFloat( "Spacing", &m_spacing, 0.5f, 5.0f, "%.2f" ) )
+			recreate = true;
+
+		bool physChanged = false;
+		physChanged |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 1.5f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 5.0f, "%.2f" );
+		physChanged |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
+		physChanged |= ImGui::Checkbox( "Bullet", &m_isBullet );
+
+		if ( ImGui::SliderFloat( "Sound Volume", &m_soundVolume, 0.0f, 100.0f, "%.0f%%" ) )
+			m_audioManager.SetVolume( m_soundVolume );
+		ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents );
+
+		static const char* gNames[] = { "Terre", "Lune", "Mars", "0", "Reverse", "Max" };
+		static float gVals[] = { -10.0f, -1.62f, -3.71f, 0.0f, 10.0f, -980.0f };
+		static int gIdx = 0;
+		if ( ImGui::Combo( "Gravity Preset", &gIdx, gNames, IM_ARRAYSIZE( gNames ) ) )
+		{
+			m_gravity = { 0.0f, gVals[gIdx] };
+			b2World_SetGravity( m_worldId, m_gravity );
+		}
+		ImGui::Text( "Preset: %s", gNames[gIdx] );
+
+		ImGui::Separator();
+		bool cageChanged = false;
+		cageChanged |= ImGui::SliderInt( "Segments par cage", &m_cageSegments, 4, 128 );
+		cageChanged |= ImGui::SliderFloat( "Épaisseur cages", &m_cageThickness, 0.05f, 2.0f, "%.2f" );
+		cageChanged |= ImGui::SliderFloat( "Vitesse rotation cages", &m_cageMotorSpeed, -5.0f, 5.0f, "%.2f rad/s" );
+
+		ImGui::End();
+
+		if ( recreate || lockChanged || physChanged || cageChanged )
+			CreateBodies();
+	}
+
+private:
+	//---------------------------------------------------------------
+	// Audio
+	//---------------------------------------------------------------
+	AudioManager m_audioManager;
+	float m_soundVolume;
+
+	//---------------------------------------------------------------
+	// Physique
+	//---------------------------------------------------------------
+	bool m_enableHitEvents;
+	b2MotionLocks m_motionLocks;
+	b2Vec2 m_gravity;
+	float m_linearDamping;
+	float m_angularDamping;
+	float m_gravityScale;
+	bool m_isBullet;
+	float m_restitution = 1.0f;
+	float m_friction = 0.0f;
+	float m_density = 1.0f;
+	float m_shapeSize = 2.0f;
+	float m_spacing = 1.0f;
+
+	//---------------------------------------------------------------
+	// Équipes
+	//---------------------------------------------------------------
+	ShapeConfig m_shapes[2] = { { e_circleShape, kDefaultColors[0] }, { e_boxShape, kDefaultColors[1] } };
+	int m_shapeCountPerType = 25;
+
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_shapeColorMap;
+
+	//---------------------------------------------------------------
+	// Cages
+	//---------------------------------------------------------------
+	float m_cageThickness = 0.6f;
+	float m_cageMotorSpeed = 0.5f;
+	int m_cageSegments = 40;
+	std::vector<b2BodyId> m_cageBodies;
+
+	//---------------------------------------------------------------
+	// Projectiles
+	//---------------------------------------------------------------
+	std::vector<b2BodyId> m_bodies;
+
+	//---------------------------------------------------------------
+	// Segments
+	//---------------------------------------------------------------
+	std::unordered_map<b2ShapeId, uint32_t, b2ShapeIdHash, b2ShapeIdEqual> m_segmentOriginalColor;
+
+	//---------------------------------------------------------------
+	// Utilitaires
+	//---------------------------------------------------------------
+
+	std::vector<b2ShapeId> m_projectileShapes; // Les formes des équipes (projectiles)
+	std::vector<b2ShapeId> m_segmentShapes;	   // Les shapes de cage (segments)
+
+	void InitializeAudio()
+	{
+		std::filesystem::path p = "data/audio/Ticks";
+		if ( !std::filesystem::exists( p ) )
+			p = "D:/Sound & Fx/audio/Ticks";
+		m_audioManager.LoadFromDirectory( p.string() );
+		m_audioManager.SetVolume( m_soundVolume );
+	}
+
+	b2BodyId CreateFullCage( b2WorldId worldId, float radius, float thickness, int segCount, float speed )
+	{
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = { 0.0f, 0.0f };
+		b2BodyId cage = b2CreateBody( worldId, &bd );
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.material = b2DefaultSurfaceMaterial();
+		sd.material.friction = 0.1f;
+		sd.material.customColor = 0x44FFD5;
+		sd.enableSensorEvents = true;
+		sd.filter.categoryBits = CATEGORY_CAGE;
+		sd.filter.maskBits = CATEGORY_SHAPE;
+
+		float dAng = 2.0f * b2_pi / segCount;
+		for ( int i = 0; i < segCount; ++i )
+		{
+			float a0 = i * dAng;
+			float a1 = ( i + 1 ) * dAng;
+
+			b2Vec2 p0 = { radius * std::cos( a0 ), radius * std::sin( a0 ) };
+			b2Vec2 p1 = { radius * std::cos( a1 ), radius * std::sin( a1 ) };
+			b2Vec2 c = 0.5f * ( p0 + p1 );
+			float ang = std::atan2( p1.y - p0.y, p1.x - p0.x );
+			float len = b2Distance( p0, p1 );
+
+			b2Polygon rect = b2MakeOffsetBox( 0.5f * len, 0.5f * thickness, c, b2MakeRot( ang ) );
+			b2ShapeId sid = b2CreatePolygonShape( cage, &sd, &rect );
+
+			m_segmentOriginalColor[sid] = sd.material.customColor;
+		}
+
+		b2BodyDef pivotDef;
+		pivotDef = b2DefaultBodyDef();
+		pivotDef.position = { 0.0f, 0.0f };
+		b2BodyId pivot = b2CreateBody( worldId, &pivotDef );
+
+		b2RevoluteJointDef jd = b2DefaultRevoluteJointDef();
+		jd.base.bodyIdA = pivot;
+		jd.base.bodyIdB = cage;
+		jd.enableMotor = true;
+		jd.motorSpeed = speed;
+		jd.maxMotorTorque = 1e5f;
+		b2CreateRevoluteJoint( worldId, &jd );
+
+		return cage;
+	}
+
+	void CreateBodies()
+
+	{
+		g_randomSeed = (uint32_t)std::time( nullptr );
+		for ( b2BodyId id : m_bodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_bodies.clear();
+
+		for ( b2BodyId id : m_cageBodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_cageBodies.clear();
+
+		m_shapeColorMap.clear();
+		m_segmentOriginalColor.clear();
+
+		float radius = 8.0f;
+		m_cageBodies.push_back( CreateFullCage( m_worldId, radius, m_cageThickness, m_cageSegments, m_cageMotorSpeed ) );
+
+		int total = 2 * m_shapeCountPerType;
+		int cols = static_cast<int>( std::ceil( std::sqrt( total ) ) );
+		int rows = ( total + cols - 1 ) / cols;
+
+		float dx = m_spacing;
+		float dy = m_spacing;
+
+		float startX = -0.5f * dx * ( cols - 1 );
+		float startY = 0.5f * dy * ( rows - 1 );
+
+		for ( int i = 0; i < total; ++i )
+		{
+			int team = i & 1;
+			const ShapeConfig& cfg = m_shapes[team];
+
+			int ix = i % cols;
+			int iy = i / cols;
+
+			float x = startX + ix * dx;
+			float y = startY - iy * dy;
+
+			b2BodyDef bd = b2DefaultBodyDef();
+			bd.type = b2_dynamicBody;
+			bd.position = { x, y };
+			float speed = RandomFloatRange( 5.0f, 5.0f );	 // module de vitesse aléatoire
+			float angle = RandomFloatRange( -b2_pi, b2_pi ); // angle aléatoire
+			bd.linearVelocity = { speed * std::cos( angle ), speed * std::sin( angle ) };
+			bd.motionLocks = m_motionLocks;
+			bd.linearDamping = m_linearDamping;
+			bd.angularDamping = m_angularDamping;
+			bd.gravityScale = m_gravityScale;
+			bd.isBullet = m_isBullet;
+
+			b2BodyId body = b2CreateBody( m_worldId, &bd );
+			m_bodies.push_back( body );
+
+			b2ShapeDef sd = b2DefaultShapeDef();
+			sd.density = m_density;
+			sd.material = b2DefaultSurfaceMaterial();
+			sd.material.restitution = m_restitution;
+			sd.material.friction = m_friction;
+			sd.material.customColor = cfg.color;
+			sd.enableSensorEvents = true;
+			sd.enableHitEvents = true;
+			sd.filter.categoryBits = CATEGORY_SHAPE;
+			sd.filter.maskBits = CATEGORY_CAGE;
+
+			auto addShape = [&]( b2ShapeId sid ) { m_shapeColorMap[sid] = cfg.color; };
+
+			switch ( cfg.type )
+			{
+				case e_circleShape:
+				{
+					b2Circle c = { { 0.0f, 0.0f }, 0.5f * m_shapeSize };
+					addShape( b2CreateCircleShape( body, &sd, &c ) );
+				}
+				break;
+
+				case e_capsuleShape:
+				{
+					b2Capsule cap = { { -0.5f * m_shapeSize, 0.0f }, { 0.5f * m_shapeSize, 0.0f }, 0.25f * m_shapeSize };
+					addShape( b2CreateCapsuleShape( body, &sd, &cap ) );
+				}
+				break;
+
+				case e_boxShape:
+				{
+					b2Polygon box = b2MakeBox( 0.5f * m_shapeSize, 0.5f * m_shapeSize );
+					addShape( b2CreatePolygonShape( body, &sd, &box ) );
+				}
+				break;
+
+				default:
+				{
+					int sides = int( cfg.type ) - int( e_polygon3 ) + 3;
+					std::vector<b2Vec2> v( sides );
+					float R = 0.5f * m_shapeSize;
+					float twoPi = 2.0f * b2_pi;
+					for ( int k = 0; k < sides; ++k )
+						v[k] = { std::cos( k * twoPi / sides ) * R, std::sin( k * twoPi / sides ) * R };
+					b2Hull h = b2ComputeHull( v.data(), sides );
+					if ( h.count )
+					{
+						b2Polygon poly = b2MakePolygon( &h, 0.0f );
+						addShape( b2CreatePolygonShape( body, &sd, &poly ) );
+					}
+				}
+			}
+		}
+	}
+
+	//---------------------------------------------------------------
+	// Catégories
+	//---------------------------------------------------------------
+	static constexpr uint16_t CATEGORY_SHAPE = 0x0002;
+	static constexpr uint16_t CATEGORY_CAGE = 0x0008;
+};
+
+static int sampleCageDuel = RegisterSample( "9:16", "CageDuel", CageDuel::Create );
+
+class BallAndChain : public Sample
+{
+public:
+	explicit BallAndChain( SampleContext* context )
+		: Sample( context )
+	{
+		if ( m_context->restart == false )
+		{
+			m_context->camera.m_center = { 0.0f, -8.0f };
+			m_context->camera.m_zoom = 27.5f;
+		}
+
+		b2BodyId groundId = b2_nullBodyId;
+		{
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			groundId = b2CreateBody( m_worldId, &bodyDef );
+		}
+
+		m_frictionTorque = 100.0f;
+
+		{
+			float hx = 0.5f;
+			b2Capsule capsule = { { -hx, 0.0f }, { hx, 0.0f }, 0.125f };
+
+			b2ShapeDef shapeDef = b2DefaultShapeDef();
+			shapeDef.density = 20.0f;
+			shapeDef.filter.categoryBits = 0x1;
+			shapeDef.filter.maskBits = 0x2;
+			b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
+
+			int jointIndex = 0;
+
+			b2BodyId prevBodyId = groundId;
+			for ( int i = 0; i < m_count; ++i )
+			{
+				b2BodyDef bodyDef = b2DefaultBodyDef();
+				bodyDef.type = b2_dynamicBody;
+				bodyDef.position = { ( 1.0f + 2.0f * i ) * hx, m_count * hx };
+				b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+				b2CreateCapsuleShape( bodyId, &shapeDef, &capsule );
+
+				b2Vec2 pivot = { ( 2.0f * i ) * hx, m_count * hx };
+				jointDef.base.bodyIdA = prevBodyId;
+				jointDef.base.bodyIdB = bodyId;
+				jointDef.base.localFrameA.p = b2Body_GetLocalPoint( jointDef.base.bodyIdA, pivot );
+				jointDef.base.localFrameB.p = b2Body_GetLocalPoint( jointDef.base.bodyIdB, pivot );
+				jointDef.enableMotor = true;
+				jointDef.maxMotorTorque = m_frictionTorque;
+				jointDef.enableSpring = i > 0;
+				jointDef.hertz = 4.0f;
+				m_jointIds[jointIndex++] = b2CreateRevoluteJoint( m_worldId, &jointDef );
+
+				prevBodyId = bodyId;
+			}
+
+			b2Circle circle = { { 0.0f, 0.0f }, 4.0f };
+
+			b2BodyDef bodyDef = b2DefaultBodyDef();
+			bodyDef.type = b2_dynamicBody;
+			bodyDef.position = { ( 1.0f + 2.0f * m_count ) * hx + circle.radius - hx, m_count * hx };
+			b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+			shapeDef.filter.categoryBits = 0x2;
+			shapeDef.filter.maskBits = 0x1;
+			b2CreateCircleShape( bodyId, &shapeDef, &circle );
+
+			b2Vec2 pivot = { ( 2.0f * m_count ) * hx, m_count * hx };
+			jointDef.base.bodyIdA = prevBodyId;
+			jointDef.base.bodyIdB = bodyId;
+			jointDef.base.localFrameA.p = b2Body_GetLocalPoint( jointDef.base.bodyIdA, pivot );
+			jointDef.base.localFrameB.p = b2Body_GetLocalPoint( jointDef.base.bodyIdB, pivot );
+			jointDef.enableMotor = true;
+			jointDef.maxMotorTorque = m_frictionTorque;
+			jointDef.enableSpring = true;
+			jointDef.hertz = 4.0f;
+			m_jointIds[jointIndex++] = b2CreateRevoluteJoint( m_worldId, &jointDef );
+			assert( jointIndex == m_count + 1 );
+		}
+	}
+
+	void UpdateGui() override
+	{
+		float fontSize = ImGui::GetFontSize();
+		float height = 60.0f;
+		ImGui::SetNextWindowPos( ImVec2( 0.5f * fontSize, m_camera->m_height - height - 2.0f * fontSize ), ImGuiCond_Once );
+		ImGui::SetNextWindowSize( ImVec2( 240.0f, height ) );
+
+		ImGui::Begin( "Ball and Chain", nullptr, ImGuiWindowFlags_NoResize );
+
+		bool updateFriction = ImGui::SliderFloat( "Joint Friction", &m_frictionTorque, 0.0f, 1000.0f, "%2.f" );
+		if ( updateFriction )
+		{
+			for ( int i = 0; i <= m_count; ++i )
+			{
+				b2RevoluteJoint_SetMaxMotorTorque( m_jointIds[i], m_frictionTorque );
+			}
+		}
+
+		ImGui::End();
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new BallAndChain( context );
+	}
+
+	static constexpr int m_count = 30;
+	b2JointId m_jointIds[m_count + 1];
+	float m_frictionTorque;
+};
+
+static int sampleBallAndChainIndex = RegisterSample( "9:16", "Ball & Chain", BallAndChain::Create );
+
+class Wichyear : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new Wichyear( context );
+	}
+
+	enum ShapeType
+	{
+		e_circleShape = 0,
+		e_capsuleShape,
+		e_boxShape,
+		e_polygon3,
+		e_polygon4,
+		e_polygon5,
+		e_polygon6,
+		e_polygon7,
+		e_polygon8
+	};
+
+	// --- Config utilisateur ---
+	uint32_t m_uniformColor = 0x00FF00;
+	int m_uniformColorIndex = 0;
+	bool m_enableDuplication = false;
+	bool m_enableScreenShake = false;
+	bool m_enableHitEvents = true;
+	bool m_enableHitSounds = true;
+	bool m_fixedRotation = false;
+
+	// --- Paramètres physiques ---
+	float m_density = 1.0f;
+	float m_restitution = 1.0f;
+	float m_friction = 0.0005f;
+	float m_linearDamping = 0.0f;
+	float m_angularDamping = 0.0f;
+	float m_gravityScale = 5.0f;
+	float m_initialAngularVelocity = 0.0f;
+
+	ShapeType m_shapeType = e_circleShape;
+
+	struct HitEvent
+	{
+		b2Vec2 point{ 0, 0 };
+		float speed{ 0 };
+		int stepIndex{ -1 };
+	};
+	std::array<HitEvent, 10> m_hitEvents;
+
+	// --- Money logic ---
+	double m_money = 1.0;				   // Valeur initiale ($1)
+	const double m_moneyMultiplier = 1.12; // +12% par rebond (modifiable)
+	int m_year = 2025;
+
+	explicit Wichyear( SampleContext* context )
+		: Sample( context )
+		, m_currentSoundIndex( 0 )
+		, lastImpactTime( -5 )
+		, shakeDuration( 0 )
+		, shakeIntensity( 0.0f )
+		, m_destroySoundIndex( 0 )
+	{
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0, 0 };
+			m_context->camera.m_zoom = 40.0f;
+		}
+		b2World_SetGravity( m_worldId, { 0.0f, -20.0f } );
+		for ( auto& e : m_hitEvents )
+			e = HitEvent();
+		InitializeAudio();
+		CreateArena();
+		Launch();
+	}
+
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+
+		// === UI contrôles classiques ===
+		if ( m_context->draw.m_showUI )
+		{
+
+			ImGui::SetNextWindowSize( ImVec2( 400, 450 ), ImGuiCond_FirstUseEver );
+			ImGui::Begin( "Blueprint" );
+			const char* shapes[] = { "Circle",	 "Capsule", "Box",		"Triangle", "Quad",
+									 "Pentagon", "Hexagon", "Heptagon", "Octagon" };
+			int si = int( m_shapeType );
+			if ( ImGui::Combo( "Shape", &si, shapes, IM_ARRAYSIZE( shapes ) ) )
+			{
+				m_shapeType = ShapeType( si );
+				Launch();
+			}
+			if ( ImGui::Checkbox( "Fixed Rotation", &m_fixedRotation ) )
+				Launch();
+			if ( ImGui::Checkbox( "Enable Hit Events", &m_enableHitEvents ) )
+				b2Body_EnableHitEvents( m_bodyId, m_enableHitEvents );
+			ImGui::Checkbox( "Enable Screen Shake", &m_enableScreenShake );
+			ImGui::Checkbox( "Enable Hit Sounds", &m_enableHitSounds );
+			ImGui::Checkbox( "Enable Duplication", &m_enableDuplication );
+			ImGui::Separator();
+			ImGui::Text( "Physical Parameters (Object)" );
+			bool update = false;
+			update |= ImGui::SliderFloat( "Restitution (object)", &m_restitution, 0.0f, 2.0f, "%.2f" );
+			update |= ImGui::SliderFloat( "Friction (object)", &m_friction, 0.0f, 2.0f, "%.2f" );
+			update |= ImGui::SliderFloat( "Density", &m_density, 0.01f, 10.0f, "%.2f" );
+			update |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 10.0f, "%.2f" );
+			update |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 10.0f, "%.2f" );
+			update |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 5.0f, "%.2f" );
+			update |= ImGui::SliderFloat( "Angular Velocity", &m_initialAngularVelocity, -50.0f, 50.0f, "%.2f" );
+			if ( update )
+				Launch();
+
+			ImGui::Separator();
+			ImGui::Text( "Physical Parameters (Ground)" );
+			CreateArena();
+
+			const char* colors[] = { "Lime", "Magenta", "Orange", "Red", "Yellow" };
+			static uint32_t vals[5] = { 0x00FF00, 0xFF00FF, 0xFFA500, 0xFF0000, 0xFFFF00 };
+			int ci = m_uniformColorIndex;
+			if ( ImGui::Combo( "Uniform Color", &ci, colors, IM_ARRAYSIZE( colors ) ) )
+			{
+				m_uniformColorIndex = ci;
+				m_uniformColor = vals[ci];
+				CreateArena();
+				Launch();
+			}
+
+			static float vol = 10.0f;
+			if ( ImGui::SliderFloat( "Audio Volume", &vol, 0.0f, 100.0f ) )
+			{
+				m_hitAudio.SetVolume( vol );
+				m_destroyAudio.SetVolume( vol );
+			}
+			ImGui::Text( "Sounds Loaded: %d", int( m_hitAudio.GetSoundCount() ) );
+			ImGui::End();
+		}
+
+		// === HUD titres/argent : TOUJOURS visible (même si UI masqué) ===
+		ImFont* largestFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+		ImFont* titleFont = m_context->draw.m_mediumFont ? m_context->draw.m_mediumFont : ImGui::GetFont();
+		ImVec2 screenSize = io.DisplaySize;
+
+		auto DrawTextOutline = []( ImFont* font, float fontSize, ImVec2 pos, ImU32 color, const char* text ) {
+			for ( int ox = 0; ox <= 3; ++ox )
+				for ( int oy = 0; oy <= 3; ++oy )
+					if ( ox != 0 || oy != 0 )
+						ImGui::GetForegroundDrawList()->AddText( font, fontSize, ImVec2( pos.x + ox, pos.y + oy ), color, text );
+		};
+
+		// -------- Calcul proportions des cages --------
+		const float cageHeight = screenSize.y * 0.23f;
+		const float cageSpacing = screenSize.y * 0.085f;
+		const float cagesBlockHeight = cageHeight * 2 + cageSpacing;
+		const float cagesBlockY0 = ( screenSize.y - cagesBlockHeight ) * 0.5f;
+		ImVec2 cage1Center = { screenSize.x * 0.5f, cagesBlockY0 + cageHeight * 0.5f };
+		ImVec2 cage2Center = { screenSize.x * 0.5f, cagesBlockY0 + cageHeight * 1.5f + cageSpacing };
+
+		// --- HUD dans la première cage (argent, multiplicateur, etc) ---
+		const char* subtitle = "Your current net worth";
+		ImVec2 subtitleSize = titleFont->CalcTextSizeA( titleFont->FontSize, FLT_MAX, 0.0f, subtitle );
+		ImVec2 subtitlePos = ImVec2( cage1Center.x - subtitleSize.x * 0.5f, cage1Center.y - subtitleSize.y * 0.8f );
+		DrawTextOutline( titleFont, titleFont->FontSize, subtitlePos, IM_COL32( 0, 0, 0, 255 ), subtitle );
+		ImGui::GetForegroundDrawList()->AddText( titleFont, titleFont->FontSize, subtitlePos, IM_COL32( 255, 255, 255, 255 ),
+												 subtitle );
+
+		char moneyText[64];
+		FormatMoney( m_money, moneyText, sizeof( moneyText ) );
+		ImVec2 moneySize = largestFont->CalcTextSizeA( largestFont->FontSize, FLT_MAX, 0.0f, moneyText );
+		ImVec2 moneyPos = ImVec2( cage1Center.x - moneySize.x * 0.5f, subtitlePos.y + subtitleSize.y + 12.0f );
+		DrawTextOutline( largestFont, largestFont->FontSize, moneyPos, IM_COL32( 0, 0, 0, 255 ), moneyText );
+		ImGui::GetForegroundDrawList()->AddText( largestFont, largestFont->FontSize, moneyPos, IM_COL32( 57, 255, 20, 255 ),
+												 moneyText );
+
+		char multiplierText[64];
+		snprintf( multiplierText, sizeof( multiplierText ), "Each bounce: x%.2f", m_moneyMultiplier );
+		ImVec2 multSize = titleFont->CalcTextSizeA( titleFont->FontSize * 0.85f, FLT_MAX, 0.0f, multiplierText );
+		ImVec2 multPos = ImVec2( cage1Center.x - multSize.x * 0.5f, moneyPos.y + moneySize.y + 10.0f );
+		DrawTextOutline( titleFont, titleFont->FontSize * 0.85f, multPos, IM_COL32( 0, 0, 0, 180 ), multiplierText );
+		ImGui::GetForegroundDrawList()->AddText( titleFont, titleFont->FontSize * 0.85f, multPos, IM_COL32( 255, 255, 255, 255 ),
+												 multiplierText );
+
+		// --- Titre "Year" au centre de la DEUXIÈME cage ---
+		const char* yearText = "In";
+		ImU32 yearColor = 0xFF00A5FF; // Orange pour le compteur seulement
+		float yearFontSize = titleFont->FontSize * 1.0f;
+		ImVec2 yearSize = titleFont->CalcTextSizeA( yearFontSize, FLT_MAX, 0.0f, yearText );
+		ImVec2 yearPos = ImVec2( cage2Center.x - yearSize.x * 0.5f, cage2Center.y - yearSize.y * 0.67f );
+
+		// Titre "Year" en BLANC
+		DrawTextOutline( titleFont, yearFontSize, yearPos, IM_COL32( 0, 0, 0, 255 ), yearText );
+		ImGui::GetForegroundDrawList()->AddText( titleFont, yearFontSize, yearPos, IM_COL32( 255, 255, 255, 255 ), yearText );
+
+		// --- Compteur sous "Year" en big font (largestFont) ---
+		char yearCounterText[32];
+		snprintf( yearCounterText, sizeof( yearCounterText ), "%d", m_year );
+		float counterFontSize = largestFont->FontSize * 1.0f;
+		ImVec2 counterSize = largestFont->CalcTextSizeA( counterFontSize, FLT_MAX, 0.0f, yearCounterText );
+		ImVec2 counterPos = ImVec2( cage2Center.x - counterSize.x * 0.5f, yearPos.y + yearSize.y + 4.0f );
+		DrawTextOutline( largestFont, counterFontSize, counterPos, IM_COL32( 0, 0, 0, 255 ), yearCounterText );
+		ImGui::GetForegroundDrawList()->AddText( largestFont, counterFontSize, counterPos, yearColor, yearCounterText );
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		b2ContactEvents contactEvents = b2World_GetContactEvents( m_worldId );
+		for ( int i = 0; i < contactEvents.hitCount; ++i )
+		{
+			const b2ContactHitEvent& ev = contactEvents.hitEvents[i];
+
+			// Récupère les filters des deux shapes du contact
+			b2Filter filterA = b2Shape_GetFilter( ev.shapeIdA );
+			b2Filter filterB = b2Shape_GetFilter( ev.shapeIdB );
+
+			// On cherche qui est le projectile (0x10)
+			bool aIsProjectile = ( filterA.categoryBits == 0x10 );
+			bool bIsProjectile = ( filterB.categoryBits == 0x10 );
+
+			// On veut un contact entre le projectile et un mur (argent ou année)
+			if ( aIsProjectile == bIsProjectile )
+				continue;
+
+			// Le mur, c'est celui qui n'est PAS le projectile
+			b2Filter wallFilter = aIsProjectile ? filterB : filterA;
+
+			// **Maintenant tu délègues !**
+			m_hitAudio.HandleHitEffect( ev.point, ev.approachSpeed, m_stepCount );
+
+			// -- Money logic --
+			if ( wallFilter.categoryBits == 0x01 )
+				m_money *= m_moneyMultiplier; // cage du haut
+			else if ( wallFilter.categoryBits == 0x02 )
+				m_year += 1; // cage du bas
+		}
+
+		m_hitAudio.PlayQueued();
+
+		if ( m_enableScreenShake )
+			ApplyShakeEffect();
+
+		// Affichage des effets d'impact
+		m_hitAudio.DrawHitEffects( &m_context->draw, m_stepCount );
+	}
+
+	void DuplicateAt( const b2Vec2& position )
+	{
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		bodyDef.type = b2_dynamicBody;
+		bodyDef.position = position;
+		bodyDef.linearVelocity = { 10.0f, 0.0f };
+		bodyDef.gravityScale = m_gravityScale;
+		bodyDef.motionLocks.angularZ = m_fixedRotation;
+		bodyDef.isBullet = true;
+		bodyDef.linearDamping = m_linearDamping;
+		bodyDef.angularDamping = m_angularDamping;
+		bodyDef.angularVelocity = m_initialAngularVelocity;
+		b2BodyId bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.density = m_density;
+		shapeDef.enableHitEvents = true;
+		shapeDef.material = b2DefaultSurfaceMaterial();
+		shapeDef.material.restitution = m_restitution;
+		shapeDef.material.friction = m_friction;
+		shapeDef.material.customColor = m_uniformColor;
+
+		const float RADIUS = 1.0f;
+		if ( m_shapeType == e_circleShape )
+		{
+			b2Circle circle = { { 0.0f, 0.0f }, RADIUS };
+			b2CreateCircleShape( bodyId, &shapeDef, &circle );
+		}
+		else if ( m_shapeType == e_capsuleShape )
+		{
+			b2Capsule capsule = { { -RADIUS, 0.0f }, { RADIUS, 0.0f }, RADIUS * 0.5f };
+			b2CreateCapsuleShape( bodyId, &shapeDef, &capsule );
+		}
+		else if ( m_shapeType == e_boxShape )
+		{
+			b2Polygon box = b2MakeBox( RADIUS, RADIUS );
+			b2CreatePolygonShape( bodyId, &shapeDef, &box );
+		}
+		else
+		{
+			int sides = int( m_shapeType ) - int( e_polygon3 ) + 3;
+			std::vector<b2Vec2> vertices( sides );
+			const float twoPi = 2.0f * b2_pi;
+			for ( int i = 0; i < sides; ++i )
+				vertices[i] = { std::cos( i * twoPi / sides ) * RADIUS, std::sin( i * twoPi / sides ) * RADIUS };
+			b2Hull hull = b2ComputeHull( vertices.data(), sides );
+			if ( hull.count > 0 )
+			{
+				b2Polygon polygon = b2MakePolygon( &hull, 0 );
+				b2CreatePolygonShape( bodyId, &shapeDef, &polygon );
+			}
+		}
+	}
+
+private:
+	b2BodyId m_bodyId{ b2_nullBodyId };
+	b2BodyId m_wallBodyId1{ b2_nullBodyId };
+	b2BodyId m_wallBodyId2{ b2_nullBodyId };
+	b2Vec2 lastImpactPosition{ 0, 0 };
+	int lastImpactTime;
+	int shakeDuration;
+	float shakeIntensity;
+	b2Vec2 cameraBasePosition{ 0, 0 };
+
+	AudioManager m_hitAudio;
+	AudioManager m_destroyAudio;
+	size_t m_currentSoundIndex = 0;
+	size_t m_destroySoundIndex = 0;
+
+	std::mt19937 m_rng{ std::random_device{}() };
+	std::uniform_real_distribution<float> m_velDist{ -10.0f, 10.0f };
+
+	static constexpr float MIN_DISTANCE_BETWEEN_IMPACTS = 0.5f;
+	static constexpr int MIN_STEPS_BETWEEN_IMPACTS = 2;
+
+	void CreateArena()
+	{
+		// Détruire les anciennes cages si besoin
+		if ( B2_IS_NON_NULL( m_wallBodyId1 ) )
+			b2DestroyBody( m_wallBodyId1 );
+		if ( B2_IS_NON_NULL( m_wallBodyId2 ) )
+			b2DestroyBody( m_wallBodyId2 );
+
+		// Paramètres cages
+		const float hw = 11.0f, hh = 11.0f, t = 0.5f, halfT = t * 0.5f;
+		const float xMin = -hw, xMax = +hw;
+		const float cageSpacing = 0.0f; // Espace vertical entre les deux cages
+		const float y_center_top = hh + cageSpacing * 0.5f;
+		const float y_center_bot = -hh - cageSpacing * 0.5f;
+
+		// --- Cage du haut (ARGENT, couleur personnalisée, AVEC TOIT, catégorie 0x01) ---
+		{
+			b2BodyDef bodyDef1 = b2DefaultBodyDef();
+			m_wallBodyId1 = b2CreateBody( m_worldId, &bodyDef1 );
+			b2ShapeDef shapeDef1 = b2DefaultShapeDef();
+			shapeDef1.enableHitEvents = true;
+			shapeDef1.material = b2DefaultSurfaceMaterial();
+			shapeDef1.material.customColor = m_uniformColor;
+			shapeDef1.filter.categoryBits = 0x01;
+
+			// Murs verticaux
+			{
+				float cy = y_center_top;
+				float cx = xMin + halfT;
+				b2Polygon box = b2MakeOffsetBox( halfT, hh, { cx, cy }, b2MakeRot( 0 ) );
+				b2CreatePolygonShape( m_wallBodyId1, &shapeDef1, &box );
+			}
+			{
+				float cy = y_center_top;
+				float cx = xMax - halfT;
+				b2Polygon box = b2MakeOffsetBox( halfT, hh, { cx, cy }, b2MakeRot( 0 ) );
+				b2CreatePolygonShape( m_wallBodyId1, &shapeDef1, &box );
+			}
+			// Toit
+			{
+				float cx = 0.0f, cy_top = y_center_top + hh - halfT;
+				b2Polygon box = b2MakeOffsetBox( hw, halfT, { cx, cy_top }, b2MakeRot( 0 ) );
+				b2CreatePolygonShape( m_wallBodyId1, &shapeDef1, &box );
+			}
+			// Fond incliné
+			const float angleLeft = -25.0f * b2_pi / 180.0f, angleRight = +25.0f * b2_pi / 180.0f;
+			const float wallLen = hw * 0.97f, halfLen = wallLen * 0.5f;
+			{
+				b2Vec2 origin = { xMin, y_center_top - hh };
+				b2Rot rot = b2MakeRot( angleLeft );
+				b2Vec2 offset = { rot.c * halfLen - rot.s * halfT, rot.s * halfLen + rot.c * halfT };
+				b2Vec2 center = { origin.x + offset.x, origin.y + offset.y };
+				b2Polygon box = b2MakeOffsetBox( halfLen, halfT, center, rot );
+				b2CreatePolygonShape( m_wallBodyId1, &shapeDef1, &box );
+			}
+			{
+				b2Vec2 origin = { xMax, y_center_top - hh };
+				b2Rot rot = b2MakeRot( angleRight );
+				b2Vec2 offset = { -rot.c * halfLen - rot.s * halfT, -rot.s * halfLen + rot.c * halfT };
+				b2Vec2 center = { origin.x + offset.x, origin.y + offset.y };
+				b2Polygon box = b2MakeOffsetBox( halfLen, halfT, center, rot );
+				b2CreatePolygonShape( m_wallBodyId1, &shapeDef1, &box );
+			}
+		}
+
+		// --- Cage du bas (ANNÉE, orange, SANS TOIT, catégorie 0x02) ---
+		{
+			b2BodyDef bodyDef2 = b2DefaultBodyDef();
+			m_wallBodyId2 = b2CreateBody( m_worldId, &bodyDef2 );
+			b2ShapeDef shapeDef2 = b2DefaultShapeDef();
+			shapeDef2.enableHitEvents = true;
+			shapeDef2.material = b2DefaultSurfaceMaterial();
+			shapeDef2.material.customColor = 0xFFA500; // Orange
+			shapeDef2.filter.categoryBits = 0x02;
+
+			// Murs verticaux
+			{
+				float cy = y_center_bot;
+				float cx = xMin + halfT;
+				b2Polygon box = b2MakeOffsetBox( halfT, hh, { cx, cy }, b2MakeRot( 0 ) );
+				b2CreatePolygonShape( m_wallBodyId2, &shapeDef2, &box );
+			}
+			{
+				float cy = y_center_bot;
+				float cx = xMax - halfT;
+				b2Polygon box = b2MakeOffsetBox( halfT, hh, { cx, cy }, b2MakeRot( 0 ) );
+				b2CreatePolygonShape( m_wallBodyId2, &shapeDef2, &box );
+			}
+			// Pas de toit
+			// Fond incliné
+			const float angleLeft = -25.0f * b2_pi / 180.0f, angleRight = +25.0f * b2_pi / 180.0f;
+			const float wallLen = hw * 0.97f, halfLen = wallLen * 0.5f;
+			{
+				b2Vec2 origin = { xMin, y_center_bot - hh };
+				b2Rot rot = b2MakeRot( angleLeft );
+				b2Vec2 offset = { rot.c * halfLen - rot.s * halfT, rot.s * halfLen + rot.c * halfT };
+				b2Vec2 center = { origin.x + offset.x, origin.y + offset.y };
+				b2Polygon box = b2MakeOffsetBox( halfLen, halfT, center, rot );
+				b2CreatePolygonShape( m_wallBodyId2, &shapeDef2, &box );
+			}
+			{
+				b2Vec2 origin = { xMax, y_center_bot - hh };
+				b2Rot rot = b2MakeRot( angleRight );
+				b2Vec2 offset = { -rot.c * halfLen - rot.s * halfT, -rot.s * halfLen + rot.c * halfT };
+				b2Vec2 center = { origin.x + offset.x, origin.y + offset.y };
+				b2Polygon box = b2MakeOffsetBox( halfLen, halfT, center, rot );
+				b2CreatePolygonShape( m_wallBodyId2, &shapeDef2, &box );
+			}
+		}
+	}
+
+	void Launch()
+	{
+		if ( B2_IS_NON_NULL( m_bodyId ) )
+			b2DestroyBody( m_bodyId );
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		bodyDef.type = b2_dynamicBody;
+		bodyDef.isBullet = true;
+		bodyDef.linearVelocity = { m_velDist( m_rng ), m_velDist( m_rng ) };
+		bodyDef.position = { 0, 20 };
+		bodyDef.gravityScale = m_gravityScale;
+		bodyDef.motionLocks.angularZ = m_fixedRotation;
+		bodyDef.linearDamping = m_linearDamping;
+		bodyDef.angularDamping = m_angularDamping;
+		bodyDef.angularVelocity = m_initialAngularVelocity;
+		m_bodyId = b2CreateBody( m_worldId, &bodyDef );
+
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.density = m_density;
+		shapeDef.enableHitEvents = m_enableHitEvents;
+		shapeDef.material = b2DefaultSurfaceMaterial();
+		shapeDef.material.restitution = m_restitution;
+		shapeDef.material.friction = m_friction;
+		shapeDef.material.customColor = m_uniformColor;
+		shapeDef.filter.categoryBits = 0x10;
+
+		const float RADIUS = 1.0f;
+		if ( m_shapeType == e_circleShape )
+		{
+			b2Circle c = { { 0, 0 }, RADIUS };
+			b2CreateCircleShape( m_bodyId, &shapeDef, &c );
+		}
+		else if ( m_shapeType == e_capsuleShape )
+		{
+			b2Capsule c = { { -RADIUS, 0 }, { RADIUS, 0 }, RADIUS * 0.5f };
+			b2CreateCapsuleShape( m_bodyId, &shapeDef, &c );
+		}
+		else if ( m_shapeType == e_boxShape )
+		{
+			b2Polygon p = b2MakeBox( RADIUS, RADIUS );
+			b2CreatePolygonShape( m_bodyId, &shapeDef, &p );
+		}
+		else
+		{
+			int sides = int( m_shapeType ) - int( e_polygon3 ) + 3;
+			std::vector<b2Vec2> verts( sides );
+			float twoPi = 2.0f * b2_pi;
+			for ( int i = 0; i < sides; i++ )
+				verts[i] = { std::cos( i * twoPi / sides ) * RADIUS, std::sin( i * twoPi / sides ) * RADIUS };
+			b2Hull h = b2ComputeHull( verts.data(), sides );
+			if ( h.count > 0 )
+			{
+				b2Polygon pp = b2MakePolygon( &h, 0 );
+				b2CreatePolygonShape( m_bodyId, &shapeDef, &pp );
+			}
+		}
+	}
+
+	void HandleHitEffects( const b2Vec2& pt )
+	{
+		cameraBasePosition = m_context->camera.m_center;
+		lastImpactPosition = pt;
+		lastImpactTime = m_stepCount;
+		if ( m_enableHitSounds && m_hitAudio.GetSoundCount() > 0 )
+		{
+			m_hitAudio.QueueSound( m_currentSoundIndex );
+			m_currentSoundIndex = ( m_currentSoundIndex + 1 ) % m_hitAudio.GetSoundCount();
+		}
+		if ( m_enableScreenShake )
+		{
+			shakeDuration = 15;
+			shakeIntensity = 0.3f;
+		}
+	}
+
+	void InitializeAudio()
+	{
+		m_hitAudio.LoadFromDirectory( "D:/Sound & Fx/audio/glo" );
+		m_destroyAudio.LoadFromDirectory( "D:/Sound & Fx/audio/glo" );
+		m_hitAudio.SetVolume( 10.0f );
+		m_destroyAudio.SetVolume( 10.0f );
+	}
+
+	void ApplyShakeEffect()
+	{
+		if ( shakeDuration > 0 )
+		{
+			float sx = ( rand() / float( RAND_MAX ) - 0.5f ) * shakeIntensity;
+			float sy = ( rand() / float( RAND_MAX ) - 0.5f ) * shakeIntensity;
+			m_context->camera.m_center.x = cameraBasePosition.x + sx;
+			m_context->camera.m_center.y = cameraBasePosition.y + sy;
+			--shakeDuration;
+			shakeIntensity *= 0.9f;
+		}
+		else
+		{
+			const float T = 0.01f, R = 0.15f;
+			if ( std::abs( m_context->camera.m_center.x - cameraBasePosition.x ) < T &&
+				 std::abs( m_context->camera.m_center.y - cameraBasePosition.y ) < T )
+				m_context->camera.m_center = cameraBasePosition;
+			else
+			{
+				m_context->camera.m_center.x += ( cameraBasePosition.x - m_context->camera.m_center.x ) * R;
+				m_context->camera.m_center.y += ( cameraBasePosition.y - m_context->camera.m_center.y ) * R;
+			}
+		}
+	}
+
+	// Ajoute une fonction utilitaire pour formatage "$ 1 234 567"
+	// Formate "$ 1,234,567.89"
+	static void FormatMoney( double amount, char* out, size_t outSize )
+	{
+		char buf[64];
+		snprintf( buf, sizeof( buf ), "%.2f", amount );
+
+		// Sépare partie entière et décimale
+		char* dot = strchr( buf, '.' );
+		size_t intLen = dot ? (size_t)( dot - buf ) : strlen( buf );
+
+		// Copie la partie entière avec virgules
+		size_t outPos = 0;
+		out[outPos++] = '$';
+		out[outPos++] = ' ';
+
+		for ( size_t i = 0; i < intLen; ++i )
+		{
+			if ( i > 0 && ( ( intLen - i ) % 3 == 0 ) )
+				out[outPos++] = ',';
+			out[outPos++] = buf[i];
+		}
+
+		// Copie la partie décimale (le point et les deux chiffres)
+		if ( dot )
+		{
+			out[outPos++] = '.';
+			out[outPos++] = dot[1] ? dot[1] : '0';
+			out[outPos++] = dot[2] ? dot[2] : '0';
+		}
+		out[outPos] = 0;
+	}
+};
+static int wichyearSample = RegisterSample( "9:16", "Wichyear", Wichyear::Create );
+
+class PixelArtHelloSample : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new PixelArtHelloSample( context );
+	}
+
+	explicit PixelArtHelloSample( SampleContext* context )
+		: Sample( context )
+	{
+		b2World_SetGravity( m_worldId, { 0.0f, 0.0f } ); // ou 0 pour tester en lévitation
+
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 18.0f;
+		}
+
+		CreatePixelArtHELLO();
+	}
+
+private:
+	static constexpr int gridHeight = 5;
+	static constexpr int gridWidth = 29; // 5x5 lettres + espaces
+	static constexpr bool HELLO[gridHeight][gridWidth] = {
+		// H     E     L     L     O
+		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1 },
+		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
+		{ 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
+		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
+		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1 } };
+
+	void CreatePixelArtHELLO()
+	{
+		const float pixelSize = 1.0f;
+		const float startX = -( gridWidth * pixelSize ) * 0.5f + pixelSize * 0.5f;
+		const float startY = +4.0f; // Ajuste pour centrer ou surélever
+
+		for ( int y = 0; y < gridHeight; ++y )
+		{
+			for ( int x = 0; x < gridWidth; ++x )
+			{
+				if ( !HELLO[y][x] )
+					continue;
+
+				b2BodyDef bd = b2DefaultBodyDef();
+				bd.type = b2_dynamicBody;
+				bd.position = { startX + x * pixelSize, startY - y * pixelSize };
+				bd.linearDamping = 2.0f;
+				bd.angularDamping = 2.0f;
+				b2BodyId bodyId = b2CreateBody( m_worldId, &bd );
+
+				b2ShapeDef sd = b2DefaultShapeDef();
+				sd.material = b2DefaultSurfaceMaterial();
+				sd.material.restitution = 0.1f;
+				sd.material.friction = 0.6f;
+				sd.material.customColor = 0xFFD700; // jaune/or
+
+				b2Polygon box = b2MakeBox( pixelSize * 0.5f, pixelSize * 0.5f );
+				b2CreatePolygonShape( bodyId, &sd, &box );
+			}
+		}
+	}
+};
+
+static int pixelArtHelloSample = RegisterSample( "Pixel Art", "HELLO (pixel box2D)", PixelArtHelloSample::Create );
+
+class PlinkoSample : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new PlinkoSample( context );
+	}
+
+	explicit PlinkoSample( SampleContext* context )
+		: Sample( context )
+	{
+		// ---- Centrage vertical automatique ----
+		float top = pinYOffset + rowSpacing * ( numRows - 2 );
+		float baseY = pinYOffset - rowSpacing * 0.8f;
+		float bottom = baseY - 0.45f;
+		float centerY = 0.5f * ( top + bottom );
+
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, centerY };
+			m_context->camera.m_zoom = 20.0f;
+		}
+		b2World_SetGravity( m_worldId, { 0.0f, -15.0f } );
+
+		CreatePlinkoPins();
+		CreateSensors();
+	}
+
+private:
+	static constexpr int numRows = 8;
+	static constexpr float ballRadius = 0.5f;
+	static constexpr float pinRadius = 0.2f;
+	static constexpr float rowSpacing = 2.0f;
+	static constexpr float colSpacing = 2.0f;
+	static constexpr int numSlots = numRows + 1;
+	static constexpr float pinYOffset = 8.0f;
+	static constexpr float sensorSize = 1.5f;
+
+	// Multiplicateurs pour 7 sensors (8 pins)
+	float m_multipliers[numRows - 1] = { 10, 3.5, 0.9, 0.5, 0.9, 3.5, 10 };
+
+	std::vector<b2BodyId> m_pins;
+	std::vector<b2BodyId> m_sensors;
+
+	// Ajoute une variable d'arrondi (modifiable live)
+	float m_sensorRoundness = 0.1f;
+
+	static uint32_t InterpColor( uint32_t c1, uint32_t c2, float t )
+	{
+		uint8_t r1 = ( c1 >> 16 ) & 0xFF, g1 = ( c1 >> 8 ) & 0xFF, b1 = c1 & 0xFF;
+		uint8_t r2 = ( c2 >> 16 ) & 0xFF, g2 = ( c2 >> 8 ) & 0xFF, b2 = c2 & 0xFF;
+		uint8_t r = static_cast<uint8_t>( r1 + t * ( r2 - r1 ) );
+		uint8_t g = static_cast<uint8_t>( g1 + t * ( g2 - g1 ) );
+		uint8_t b = static_cast<uint8_t>( b1 + t * ( b2 - b1 ) );
+		return ( r << 16 ) | ( g << 8 ) | b;
+	}
+
+	void CreatePlinkoPins()
+	{
+		for ( b2BodyId id : m_pins )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_pins.clear();
+
+		for ( int row = 1; row < numRows; ++row )
+		{
+			int pinsThisRow = row + 1;
+			float y = pinYOffset + rowSpacing * ( numRows - 1 - row );
+			float xOffset = -colSpacing * 0.5f * row;
+			for ( int i = 0; i < pinsThisRow; ++i )
+			{
+				float x = xOffset + i * colSpacing;
+				b2BodyDef bd = b2DefaultBodyDef();
+				bd.type = b2_staticBody;
+				bd.position = { x, y };
+				b2BodyId pinBody = b2CreateBody( m_worldId, &bd );
+
+				b2ShapeDef sd = b2DefaultShapeDef();
+				sd.material = b2DefaultSurfaceMaterial();
+				sd.material.restitution = 0.35f;
+				sd.material.friction = 0.5f;
+				sd.material.customColor = 0xFFFFFFFF;
+
+				b2Circle circle = { { 0, 0 }, pinRadius };
+				b2CreateCircleShape( pinBody, &sd, &circle );
+
+				m_pins.push_back( pinBody );
+			}
+		}
+	}
+
+	void CreateSensors()
+	{
+		for ( b2BodyId id : m_sensors )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_sensors.clear();
+
+		const int lastRowPins = numRows;
+		const int numSensors = lastRowPins - 1;
+		const float baseY = pinYOffset - rowSpacing * 0.8f;
+		const float totalWidth = ( lastRowPins - 1 ) * colSpacing;
+		const float startX = -0.5f * totalWidth;
+
+		for ( int s = 0; s < numSensors; ++s )
+		{
+			float x_left = startX + s * colSpacing;
+			float x_right = startX + ( s + 1 ) * colSpacing;
+			float x = 0.5f * ( x_left + x_right );
+
+			b2BodyDef bd = b2DefaultBodyDef();
+			bd.type = b2_staticBody;
+			bd.position = { x, baseY - 0.45f };
+
+			b2BodyId sensor = b2CreateBody( m_worldId, &bd );
+
+			b2ShapeDef sd = b2DefaultShapeDef();
+			sd.isSensor = true;
+
+			float t = numSensors > 1 ? float( s ) / ( numSensors - 1 ) : 0.0f;
+			uint32_t colorLeft = 0xFF2211;
+			uint32_t colorCenter = 0xFFEE33;
+			uint32_t color;
+			if ( t < 0.5f )
+				color = InterpColor( colorLeft, colorCenter, t * 2.0f );
+			else
+				color = InterpColor( colorCenter, colorLeft, ( t - 0.5f ) * 2.0f );
+
+			sd.material = b2DefaultSurfaceMaterial();
+			sd.material.customColor = color;
+
+			// Rounded box
+			b2Polygon rounded = b2MakeRoundedBox( sensorSize * 0.5f, sensorSize * 0.5f, m_sensorRoundness );
+			b2CreatePolygonShape( sensor, &sd, &rounded );
+
+			m_sensors.push_back( sensor );
+		}
+	}
+
+	void UpdateGui() override
+	{
+		ImGuiIO& io = ImGui::GetIO();
+		ImFont* multFont = m_context->draw.m_mediumFont ? m_context->draw.m_mediumFont : ImGui::GetFont();
+
+		// Slider pour tester l'arrondi en temps réel
+		ImGui::SetNextWindowPos( ImVec2( 20, 20 ), ImGuiCond_Always );
+		ImGui::SetNextWindowSize( ImVec2( 250, 0 ), ImGuiCond_Always );
+		ImGui::Begin( "Sensor Arrondi" );
+		if ( ImGui::SliderFloat( "Arrondi capteurs", &m_sensorRoundness, 0.0f, sensorSize * 0.5f, "%.2f" ) )
+		{
+			CreateSensors(); // Regénère les sensors à chaque changement d'arrondi
+		}
+		ImGui::End();
+
+		// Multiplicateurs attachés aux sensors
+		for ( int i = 0; i < (int)m_sensors.size(); ++i )
+		{
+			b2BodyId sensor = m_sensors[i];
+			b2Vec2 pos = b2Body_GetPosition( sensor );
+			b2Vec2 screen = m_context->camera.ConvertWorldToScreen( pos );
+
+			char multText[16];
+			// Test si entier ou non, tolérance 1e-6 pour éviter les imprécisions flottantes
+			if ( std::fabs( m_multipliers[i] - int( m_multipliers[i] ) ) < 1e-6 )
+				snprintf( multText, sizeof( multText ), "%dx", int( m_multipliers[i] ) );
+			else
+				snprintf( multText, sizeof( multText ), "%.1fx", m_multipliers[i] );
+
+			ImVec2 textSize = multFont->CalcTextSizeA( multFont->FontSize, FLT_MAX, 0.0f, multText );
+			float x = screen.x - textSize.x * 0.5f;
+			float y = screen.y - textSize.y * 0.5f;
+
+			ImGui::GetForegroundDrawList()->AddText( multFont, multFont->FontSize, ImVec2( x, y ), IM_COL32( 255, 255, 255, 255 ),
+													 multText );
+		}
+
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		if ( ImGui::IsKeyPressed( ImGuiKey_Space ) )
+		{
+			b2BodyDef bd = b2DefaultBodyDef();
+			bd.type = b2_dynamicBody;
+			bd.position = { 0.0f, pinYOffset + rowSpacing * numRows + 2.0f };
+			bd.linearDamping = 0.03f;
+			bd.angularDamping = 0.02f;
+			bd.isBullet = true;
+			b2BodyId ball = b2CreateBody( m_worldId, &bd );
+
+			b2ShapeDef sd = b2DefaultShapeDef();
+			sd.density = 1.5f;
+			sd.material = b2DefaultSurfaceMaterial();
+			sd.material.restitution = 0.65f;
+			sd.material.friction = 0.12f;
+			sd.material.customColor = 0x30c8ff;
+
+			b2Circle circ = { { 0, 0 }, ballRadius };
+			b2CreateCircleShape( ball, &sd, &circ );
+		}
+	}
+};
+
+static int samplePlinko = RegisterSample( "9:16", "Plinko (simple)", PlinkoSample::Create );
