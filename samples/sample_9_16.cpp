@@ -7985,7 +7985,6 @@ public:
 	explicit PlinkoSample( SampleContext* context )
 		: Sample( context )
 	{
-		// ---- Centrage vertical automatique ----
 		float top = pinYOffset + rowSpacing * ( numRows - 2 );
 		float baseY = pinYOffset - rowSpacing * 0.8f;
 		float bottom = baseY - 0.45f;
@@ -7998,13 +7997,25 @@ public:
 		}
 		b2World_SetGravity( m_worldId, { 0.0f, -15.0f } );
 
+		CreateGround();
+		CreateWalls();
 		CreatePlinkoPins();
 		CreateSensors();
+
+		m_audioManager.LoadFromDirectory( "D:/Sound & Fx/audio/plinko" );
+		m_audioManager.AddSoundFromDirectory( "D:/Sound & Fx/audio/FNAF3/bonus.wav" ); // index 2
+		m_audioManager.SetVolume( m_volume );
+
+		m_lastBallTime = ImGui::GetTime();
+		m_startTime = ImGui::GetTime();
 	}
 
 private:
-	static constexpr int numRows = 8;
+	static constexpr int numRows = 10;
 	static constexpr float ballRadius = 0.5f;
+	static constexpr uint16_t CATEGORY_BALL = 0x0002;
+	static constexpr uint16_t CATEGORY_STATIC = 0x0004;
+	static constexpr uint16_t CATEGORY_SENSOR = 0x0008;
 	static constexpr float pinRadius = 0.2f;
 	static constexpr float rowSpacing = 2.0f;
 	static constexpr float colSpacing = 2.0f;
@@ -8012,14 +8023,51 @@ private:
 	static constexpr float pinYOffset = 8.0f;
 	static constexpr float sensorSize = 1.5f;
 
-	// Multiplicateurs pour 7 sensors (8 pins)
-	float m_multipliers[numRows - 1] = { 10, 3.5, 0.9, 0.5, 0.9, 3.5, 10 };
+	double m_lastBallTime = 0.0;
+	float m_autoFireDelay = 0.35f;
+	bool m_autoFire = true;
 
+	float m_multipliers[numRows - 1] = { 4.5, 1.2, 0.5, 0.3, 0.1, 0.3, 0.5, 1.2, 4.5 };
 	std::vector<b2BodyId> m_pins;
+	std::vector<b2ShapeId> m_pinShapes;
 	std::vector<b2BodyId> m_sensors;
+	std::vector<b2JointId> m_sensorMotorJoints;
+	b2BodyId m_groundId = b2_nullBodyId;
+	std::vector<b2BodyId> m_walls;
+	std::vector<int> m_sensorHitCounts;
 
-	// Ajoute une variable d'arrondi (modifiable live)
+	AudioManager m_audioManager;
+	float m_volume = 50.0f;
+	uint32_t m_pinBaseColor = 0xFFFFFFFF;
+	uint32_t m_pinContactColor = 0xFF3040;
+
+	float m_motorMaxForce = 1000.0f;
+	float m_motorCorrection = 0.5f;
+	float m_motorTargetOffset = 0.0f;
 	float m_sensorRoundness = 0.1f;
+
+	double m_money = 100.0;
+	double m_ballCost = 5.0;
+	double m_startTime = 0.0;
+
+	// --- Sons fixes ---
+	void PlayBallSpawnSound()
+	{
+		m_audioManager.PlayImmediate( 0 );
+	}
+	void PlayBallDestroySound()
+	{
+		m_audioManager.PlayImmediate( 1 );
+	}
+	void PlaySpecialSound()
+	{
+		m_audioManager.PlayImmediate( 2 );
+	}
+
+	static float RandomFloat( float min, float max )
+	{
+		return min + ( max - min ) * ( float( rand() ) / float( RAND_MAX ) );
+	}
 
 	static uint32_t InterpColor( uint32_t c1, uint32_t c2, float t )
 	{
@@ -8031,20 +8079,76 @@ private:
 		return ( r << 16 ) | ( g << 8 ) | b;
 	}
 
+	void CreateGround()
+	{
+		if ( B2_IS_NON_NULL( m_groundId ) )
+			b2DestroyBody( m_groundId );
+
+		b2BodyDef groundDef = b2DefaultBodyDef();
+		m_groundId = b2CreateBody( m_worldId, &groundDef );
+	}
+
+	void CreateWallBetween( b2BodyId groundId, b2ShapeDef* shapeDef, b2Vec2 a, b2Vec2 b, float thickness )
+	{
+		float dx = b.x - a.x;
+		float dy = b.y - a.y;
+		float length = std::sqrt( dx * dx + dy * dy ) * 0.5f;
+		float angle = std::atan2( dy, dx );
+		b2Vec2 center = { 0.5f * ( a.x + b.x ), 0.5f * ( a.y + b.y ) };
+		b2Polygon box = b2MakeOffsetBox( length, 0.5f * thickness, center, b2MakeRot( angle ) );
+		b2CreatePolygonShape( groundId, shapeDef, &box );
+	}
+
+	void CreateWalls()
+	{
+		b2BodyDef bodyDef = b2DefaultBodyDef();
+		b2BodyId groundId = b2CreateBody( m_worldId, &bodyDef );
+
+		b2ShapeDef shapeDef = b2DefaultShapeDef();
+		shapeDef.material.friction = 0.4f;
+		shapeDef.material.restitution = 0.1f;
+		shapeDef.material.customColor = 0xFFFFFFFF;
+		shapeDef.filter.categoryBits = CATEGORY_STATIC;
+		shapeDef.filter.maskBits = CATEGORY_BALL;
+
+		float pinLeftTopX = -0.5f * colSpacing * 1;
+		float pinLeftTopY = pinYOffset + rowSpacing * ( numRows - 1 - 1 );
+		int lastRow = numRows - 1;
+		float pinLeftBotX = -0.5f * colSpacing * lastRow;
+		float pinLeftBotY = pinYOffset + rowSpacing * ( numRows - 1 - lastRow );
+
+		int firstRowPins = 2;
+		float pinRightTopX = -0.5f * colSpacing * 1 + ( firstRowPins - 1 ) * colSpacing;
+		float pinRightTopY = pinYOffset + rowSpacing * ( numRows - 1 - 1 );
+
+		int lastRowPins = numRows;
+		float pinRightBotX = -0.5f * colSpacing * lastRow + ( lastRowPins - 1 ) * colSpacing;
+		float pinRightBotY = pinYOffset + rowSpacing * ( numRows - 1 - lastRow );
+
+		float wallThickness = 0.4f;
+
+		CreateWallBetween( groundId, &shapeDef, { pinLeftBotX, pinLeftBotY }, { pinLeftTopX, pinLeftTopY }, wallThickness );
+		CreateWallBetween( groundId, &shapeDef, { pinRightBotX, pinRightBotY }, { pinRightTopX, pinRightTopY }, wallThickness );
+	}
+
 	void CreatePlinkoPins()
 	{
 		for ( b2BodyId id : m_pins )
 			if ( B2_IS_NON_NULL( id ) )
 				b2DestroyBody( id );
 		m_pins.clear();
+		m_pinShapes.clear();
 
-		for ( int row = 1; row < numRows; ++row )
+		for ( int row = 3; row < numRows; ++row )
 		{
 			int pinsThisRow = row + 1;
 			float y = pinYOffset + rowSpacing * ( numRows - 1 - row );
 			float xOffset = -colSpacing * 0.5f * row;
 			for ( int i = 0; i < pinsThisRow; ++i )
 			{
+				if ( i == 0 || i == pinsThisRow - 1 )
+					continue;
+
 				float x = xOffset + i * colSpacing;
 				b2BodyDef bd = b2DefaultBodyDef();
 				bd.type = b2_staticBody;
@@ -8055,12 +8159,14 @@ private:
 				sd.material = b2DefaultSurfaceMaterial();
 				sd.material.restitution = 0.35f;
 				sd.material.friction = 0.5f;
-				sd.material.customColor = 0xFFFFFFFF;
+				sd.filter.categoryBits = CATEGORY_STATIC;
+				sd.filter.maskBits = CATEGORY_BALL;
+				sd.material.customColor = m_pinBaseColor;
 
 				b2Circle circle = { { 0, 0 }, pinRadius };
-				b2CreateCircleShape( pinBody, &sd, &circle );
-
+				b2ShapeId shapeId = b2CreateCircleShape( pinBody, &sd, &circle );
 				m_pins.push_back( pinBody );
+				m_pinShapes.push_back( shapeId );
 			}
 		}
 	}
@@ -8071,9 +8177,15 @@ private:
 			if ( B2_IS_NON_NULL( id ) )
 				b2DestroyBody( id );
 		m_sensors.clear();
+		for ( b2JointId jid : m_sensorMotorJoints )
+			if ( B2_IS_NON_NULL( jid ) )
+				b2DestroyJoint( jid );
+		m_sensorMotorJoints.clear();
 
 		const int lastRowPins = numRows;
 		const int numSensors = lastRowPins - 1;
+		m_sensorHitCounts.clear();
+		m_sensorHitCounts.resize( numSensors, 0 );
 		const float baseY = pinYOffset - rowSpacing * 0.8f;
 		const float totalWidth = ( lastRowPins - 1 ) * colSpacing;
 		const float startX = -0.5f * totalWidth;
@@ -8085,31 +8197,53 @@ private:
 			float x = 0.5f * ( x_left + x_right );
 
 			b2BodyDef bd = b2DefaultBodyDef();
-			bd.type = b2_staticBody;
+			bd.type = b2_dynamicBody;
 			bd.position = { x, baseY - 0.45f };
+			bd.motionLocks.linearX = true;
+			bd.motionLocks.linearY = false;
+			bd.motionLocks.angularZ = true;
 
 			b2BodyId sensor = b2CreateBody( m_worldId, &bd );
 
 			b2ShapeDef sd = b2DefaultShapeDef();
 			sd.isSensor = true;
+			sd.enableSensorEvents = true;
+			sd.filter.categoryBits = CATEGORY_SENSOR;
+			sd.filter.maskBits = CATEGORY_BALL;
 
+			uint32_t colorEdge = 0xFF0000;
+			uint32_t colorCenter = 0xFFFF00;
 			float t = numSensors > 1 ? float( s ) / ( numSensors - 1 ) : 0.0f;
-			uint32_t colorLeft = 0xFF2211;
-			uint32_t colorCenter = 0xFFEE33;
-			uint32_t color;
-			if ( t < 0.5f )
-				color = InterpColor( colorLeft, colorCenter, t * 2.0f );
-			else
-				color = InterpColor( colorCenter, colorLeft, ( t - 0.5f ) * 2.0f );
+			float t2 = std::fabs( 0.5f - t ) * 2.0f;
+			uint32_t color = InterpColor( colorCenter, colorEdge, t2 );
 
 			sd.material = b2DefaultSurfaceMaterial();
 			sd.material.customColor = color;
 
-			// Rounded box
 			b2Polygon rounded = b2MakeRoundedBox( sensorSize * 0.5f, sensorSize * 0.5f, m_sensorRoundness );
 			b2CreatePolygonShape( sensor, &sd, &rounded );
 
+			b2ShapeDef sd_phys = b2DefaultShapeDef();
+			sd_phys.isSensor = false;
+			sd_phys.density = 0.01f;
+			sd_phys.filter.categoryBits = 0;
+			sd_phys.filter.maskBits = 0;
+			b2Circle minific = { { 0, 0 }, 0.005f };
+			b2CreateCircleShape( sensor, &sd_phys, &minific );
+
 			m_sensors.push_back( sensor );
+
+			b2MotorJointDef jointDef = b2DefaultMotorJointDef();
+			jointDef.base.bodyIdA = m_groundId;
+			jointDef.base.bodyIdB = sensor;
+			b2Vec2 sensorWorldPos = b2Body_GetPosition( sensor );
+			jointDef.base.localFrameA.p = b2Body_GetLocalPoint( m_groundId, sensorWorldPos );
+			jointDef.base.localFrameB.p = { 0.0f, 0.0f };
+			jointDef.maxForce = m_motorMaxForce;
+			jointDef.maxTorque = 0.0f;
+			jointDef.correctionFactor = m_motorCorrection;
+			b2JointId jointId = b2CreateMotorJoint( m_worldId, &jointDef );
+			m_sensorMotorJoints.push_back( jointId );
 		}
 	}
 
@@ -8118,17 +8252,63 @@ private:
 		ImGuiIO& io = ImGui::GetIO();
 		ImFont* multFont = m_context->draw.m_mediumFont ? m_context->draw.m_mediumFont : ImGui::GetFont();
 
-		// Slider pour tester l'arrondi en temps réel
-		ImGui::SetNextWindowPos( ImVec2( 20, 20 ), ImGuiCond_Always );
-		ImGui::SetNextWindowSize( ImVec2( 250, 0 ), ImGuiCond_Always );
-		ImGui::Begin( "Sensor Arrondi" );
-		if ( ImGui::SliderFloat( "Arrondi capteurs", &m_sensorRoundness, 0.0f, sensorSize * 0.5f, "%.2f" ) )
+		if ( m_context->draw.m_showUI )
 		{
-			CreateSensors(); // Regénère les sensors à chaque changement d'arrondi
-		}
-		ImGui::End();
+			ImGui::SetNextWindowSize( ImVec2( 250, 0 ), ImGuiCond_Once );
+			ImGui::Begin( "Plinko Settings" );
+			ImGui::SliderFloat( "Motor Max Force", &m_motorMaxForce, 0.0f, 10.0f, "%.1f" );
+			ImGui::SliderFloat( "Correction", &m_motorCorrection, 0.0f, 1.0f, "%.2f" );
+			ImGui::SliderFloat( "Target Offset", &m_motorTargetOffset, -1.0f, 1.0f, "%.2f" );
+			ImGui::Checkbox( "Auto Fire", &m_autoFire );
+			ImGui::SliderFloat( "Auto Fire Delay", &m_autoFireDelay, 0.1f, 2.0f, "%.2fs" );
+			ImGui::End();
 
-		// Multiplicateurs attachés aux sensors
+			// Histogramme sensors
+			ImGui::SetNextWindowSize( ImVec2( 360, 200 ), ImGuiCond_Once );
+			if ( ImGui::Begin( "Distribution sensors (histogram)", nullptr, ImGuiWindowFlags_NoResize ) )
+			{
+				ImDrawList* drawList = ImGui::GetWindowDrawList();
+				ImVec2 windowPos = ImGui::GetWindowPos();
+				ImVec2 windowSize = ImGui::GetWindowSize();
+
+				const int n = (int)m_sensorHitCounts.size();
+				if ( n > 0 )
+				{
+					float pad = 10.0f;
+					float bottomPad = 6.0f;
+					float barWidth = ( windowSize.x - 2 * pad ) / n;
+					int maxVal = *std::max_element( m_sensorHitCounts.begin(), m_sensorHitCounts.end() );
+					maxVal = std::max( 1, maxVal );
+
+					for ( int s = 0; s < n; ++s )
+					{
+						float hNorm = (float)m_sensorHitCounts[s] / (float)maxVal;
+						float barHeight = ( windowSize.y - 50.0f ) * hNorm;
+
+						uint32_t colorEdge = 0xFF0000;
+						uint32_t colorCenter = 0xFFFF00;
+						float t = n > 1 ? float( s ) / ( n - 1 ) : 0.0f;
+						float t2 = std::fabs( 0.5f - t ) * 2.0f;
+						uint32_t color = InterpColor( colorCenter, colorEdge, t2 );
+						ImU32 imColor = IM_COL32( ( color >> 16 ) & 0xFF, ( color >> 8 ) & 0xFF, ( color ) & 0xFF, 255 );
+
+						float x0 = windowPos.x + pad + s * barWidth;
+						float x1 = x0 + barWidth - 2.0f;
+						float y0 = windowPos.y + windowSize.y - bottomPad;
+						float y1 = y0 - barHeight;
+
+						drawList->AddRectFilled( ImVec2( x0, y1 ), ImVec2( x1, y0 ), imColor, 2.0f );
+						char txt[8];
+						snprintf( txt, sizeof( txt ), "%d", m_sensorHitCounts[s] );
+						ImVec2 tsize = ImGui::CalcTextSize( txt );
+						drawList->AddText( ImVec2( x0 + ( barWidth - tsize.x ) * 0.5f, y1 - tsize.y - 2.0f ), imColor, txt );
+					}
+				}
+				ImGui::End();
+			}
+		}
+
+		// Multiplicateurs au-dessus des sensors
 		for ( int i = 0; i < (int)m_sensors.size(); ++i )
 		{
 			b2BodyId sensor = m_sensors[i];
@@ -8136,31 +8316,126 @@ private:
 			b2Vec2 screen = m_context->camera.ConvertWorldToScreen( pos );
 
 			char multText[16];
-			// Test si entier ou non, tolérance 1e-6 pour éviter les imprécisions flottantes
 			if ( std::fabs( m_multipliers[i] - int( m_multipliers[i] ) ) < 1e-6 )
 				snprintf( multText, sizeof( multText ), "%dx", int( m_multipliers[i] ) );
 			else
 				snprintf( multText, sizeof( multText ), "%.1fx", m_multipliers[i] );
-
 			ImVec2 textSize = multFont->CalcTextSizeA( multFont->FontSize, FLT_MAX, 0.0f, multText );
 			float x = screen.x - textSize.x * 0.5f;
 			float y = screen.y - textSize.y * 0.5f;
-
 			ImGui::GetForegroundDrawList()->AddText( multFont, multFont->FontSize, ImVec2( x, y ), IM_COL32( 255, 255, 255, 255 ),
 													 multText );
 		}
 
+		// HUD central : titre, argent, timer
+		float baseY = m_context->camera.m_height * 0.14f;
+		float spacing = 12.0f;
+
+		ImFont* titleFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+		ImFont* moneyFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+		ImFont* timerFont = m_context->draw.m_mediumFont ? m_context->draw.m_mediumFont : ImGui::GetFont();
+
+		const char* ballTitle = "1 ball = $5";
+		char moneyText[32];
+		snprintf( moneyText, sizeof( moneyText ), "$%.2f", m_money );
+
+		char timerText[32];
+		double elapsed = ImGui::GetTime() - m_startTime;
+		snprintf( timerText, sizeof( timerText ), "Time: %.2fs", elapsed );
+
+		ImVec2 ballTitleSize = titleFont->CalcTextSizeA( titleFont->FontSize, FLT_MAX, 0.0f, ballTitle );
+		ImVec2 moneySize = moneyFont->CalcTextSizeA( moneyFont->FontSize, FLT_MAX, 0.0f, moneyText );
+		ImVec2 timerSize = timerFont->CalcTextSizeA( timerFont->FontSize, FLT_MAX, 0.0f, timerText );
+
+		float centerX = m_context->camera.m_width * 0.5f;
+
+		float y = baseY;
+		float x = centerX - ballTitleSize.x * 0.5f;
+		ImGui::GetForegroundDrawList()->AddText( titleFont, titleFont->FontSize, ImVec2( x, y ), IM_COL32( 255, 215, 0, 255 ),
+												 ballTitle );
+		y += ballTitleSize.y + spacing;
+		x = centerX - moneySize.x * 0.5f;
+		ImGui::GetForegroundDrawList()->AddText( moneyFont, moneyFont->FontSize, ImVec2( x, y ), IM_COL32( 70, 255, 70, 255 ),
+												 moneyText );
+		y += moneySize.y + spacing;
+		x = centerX - timerSize.x * 0.5f;
+		ImGui::GetForegroundDrawList()->AddText( timerFont, timerFont->FontSize, ImVec2( x, y ), IM_COL32( 240, 240, 240, 255 ),
+												 timerText );
 	}
 
 	void Step() override
 	{
 		Sample::Step();
 
-		if ( ImGui::IsKeyPressed( ImGuiKey_Space ) )
+		// Pins : update couleur contact
+		for ( const auto& pinShape : m_pinShapes )
 		{
+			b2ContactData contacts[8];
+			int contactCount = b2Shape_GetContactData( pinShape, contacts, 8 );
+			b2SurfaceMaterial mat = b2Shape_GetSurfaceMaterial( pinShape );
+			mat.customColor = ( contactCount > 0 ) ? m_pinContactColor : m_pinBaseColor;
+			b2Shape_SetSurfaceMaterial( pinShape, mat );
+		}
+
+		// Sensors : score, destructions, sons
+		b2SensorEvents sensorEvents = b2World_GetSensorEvents( m_worldId );
+		std::set<b2BodyId> zombies;
+		std::vector<int> sensorsToKick;
+
+		for ( int i = 0; i < sensorEvents.beginCount; ++i )
+		{
+			const b2SensorBeginTouchEvent& event = sensorEvents.beginEvents[i];
+			b2ShapeId visitorShapeId = event.visitorShapeId;
+			b2BodyId visitorBodyId = b2Shape_GetBody( visitorShapeId );
+			b2BodyId sensorBodyId = b2Shape_GetBody( event.sensorShapeId );
+
+			for ( int s = 0; s < (int)m_sensors.size(); ++s )
+			{
+				if ( m_sensors[s].index1 == sensorBodyId.index1 && m_sensors[s].world0 == sensorBodyId.world0 )
+				{
+					m_money += m_ballCost * m_multipliers[s];
+					zombies.insert( visitorBodyId );
+					sensorsToKick.push_back( s );
+					m_sensorHitCounts[s]++;
+					// BONUS spécial : son si gros multiplicateur
+					if ( m_multipliers[s] > 3.0f )
+						PlaySpecialSound();
+					break;
+				}
+			}
+		}
+		for ( b2BodyId bodyId : zombies )
+		{
+			if ( B2_IS_NON_NULL( bodyId ) )
+			{
+				b2DestroyBody( bodyId );
+				PlayBallDestroySound();
+			}
+		}
+
+		for ( int idx : sensorsToKick )
+		{
+			b2BodyId sensorId = m_sensors[idx];
+			b2Vec2 kickImpulse = { 0.0f, -50.0f };
+			b2Body_ApplyLinearImpulse( sensorId, kickImpulse, b2Body_GetPosition( sensorId ), true );
+		}
+
+		// --- Spawn balle (auto/Space) + son
+		double now = ImGui::GetTime();
+		bool wantFire = false;
+		if ( m_autoFire && now - m_lastBallTime >= m_autoFireDelay && m_money >= m_ballCost )
+			wantFire = true;
+		if ( ImGui::IsKeyPressed( ImGuiKey_Space ) && m_money >= m_ballCost )
+			wantFire = true;
+
+		if ( wantFire )
+		{
+			m_money -= m_ballCost;
+			m_lastBallTime = now;
+			float xRand = RandomFloat( -0.1f, 0.1f );
 			b2BodyDef bd = b2DefaultBodyDef();
 			bd.type = b2_dynamicBody;
-			bd.position = { 0.0f, pinYOffset + rowSpacing * numRows + 2.0f };
+			bd.position = { xRand, pinYOffset + rowSpacing * numRows - 5.0f };
 			bd.linearDamping = 0.03f;
 			bd.angularDamping = 0.02f;
 			bd.isBullet = true;
@@ -8172,11 +8447,15 @@ private:
 			sd.material.restitution = 0.65f;
 			sd.material.friction = 0.12f;
 			sd.material.customColor = 0x30c8ff;
-
+			sd.enableSensorEvents = true;
+			sd.filter.categoryBits = CATEGORY_BALL;
+			sd.filter.maskBits = CATEGORY_STATIC | CATEGORY_SENSOR;
 			b2Circle circ = { { 0, 0 }, ballRadius };
 			b2CreateCircleShape( ball, &sd, &circ );
+
+			PlayBallSpawnSound(); // son spawn balle
 		}
 	}
 };
 
-static int samplePlinko = RegisterSample( "9:16", "Plinko (simple)", PlinkoSample::Create );
+static int samplePlinkoSample = RegisterSample( "9:16", "PlinkoSample", PlinkoSample::Create );
