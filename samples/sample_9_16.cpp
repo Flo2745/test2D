@@ -8003,7 +8003,8 @@ public:
 		CreateSensors();
 
 		m_audioManager.LoadFromDirectory( "D:/Sound & Fx/audio/plinko" );
-		m_audioManager.AddSoundFromDirectory( "D:/Sound & Fx/audio/FNAF3/bonus.wav" ); // index 2
+		m_numPlinkoSounds = m_audioManager.GetSoundCount();
+		m_numFnafSounds = m_audioManager.GetSoundCount() - m_numPlinkoSounds;
 		m_audioManager.SetVolume( m_volume );
 
 		m_lastBallTime = ImGui::GetTime();
@@ -8050,18 +8051,21 @@ private:
 	double m_ballCost = 5.0;
 	double m_startTime = 0.0;
 
-	// --- Sons fixes ---
-	void PlayBallSpawnSound()
-	{
-		m_audioManager.PlayImmediate( 0 );
-	}
+	int m_numPlinkoSounds = 0;
+	int m_numFnafSounds = 0;
+
 	void PlayBallDestroySound()
 	{
-		m_audioManager.PlayImmediate( 1 );
+		if ( m_numFnafSounds > 0 )
+		{
+			int index = m_numPlinkoSounds + ( rand() % m_numFnafSounds );
+			m_audioManager.PlayImmediate( index );
+		}
 	}
-	void PlaySpecialSound()
+
+	void PlayBallSpawnSound()
 	{
-		m_audioManager.PlayImmediate( 2 );
+		PlayBallDestroySound();
 	}
 
 	static float RandomFloat( float min, float max )
@@ -8397,10 +8401,6 @@ private:
 					zombies.insert( visitorBodyId );
 					sensorsToKick.push_back( s );
 					m_sensorHitCounts[s]++;
-					// BONUS spécial : son si gros multiplicateur
-					if ( m_multipliers[s] > 3.0f )
-						PlaySpecialSound();
-					break;
 				}
 			}
 		}
@@ -8409,7 +8409,7 @@ private:
 			if ( B2_IS_NON_NULL( bodyId ) )
 			{
 				b2DestroyBody( bodyId );
-				PlayBallDestroySound();
+				PlayBallDestroySound(); // <- destruction = son de destruction
 			}
 		}
 
