@@ -8002,9 +8002,9 @@ public:
 		CreatePlinkoPins();
 		CreateSensors();
 
-		m_audioManager.LoadFromDirectory( "D:/Sound & Fx/audio/plinko" );
-		m_numPlinkoSounds = m_audioManager.GetSoundCount();
-		m_numFnafSounds = m_audioManager.GetSoundCount() - m_numPlinkoSounds;
+		// -- AUDIO -- gestion de deux dossiers
+		m_audioManager.LoadFromDirectory( "D:/Sound & Fx/audio/plinko" ); // banque 0 : sons de spawn
+		m_audioManager.AddFromDirectory( "D:/Sound & Fx/audio/FNAF3" ); // banque 1 : sons de destruction
 		m_audioManager.SetVolume( m_volume );
 
 		m_lastBallTime = ImGui::GetTime();
@@ -8051,21 +8051,32 @@ private:
 	double m_ballCost = 5.0;
 	double m_startTime = 0.0;
 
-	int m_numPlinkoSounds = 0;
-	int m_numFnafSounds = 0;
+	// --- Sons ---
+	void PlayBallSpawnSound()
+	{
+		// Banque 0 (spawn) : lecture aléatoire ou séquentielle
+		m_audioManager.SetCurrentBank( 0 );
+		// Séquentiel (round-robin) :
+		m_audioManager.PlayNextInBank();
+		// Ou si tu veux vraiment aléatoire :
+		// m_audioManager.PlayRandomInBank();
+	}
 
 	void PlayBallDestroySound()
 	{
-		if ( m_numFnafSounds > 0 )
-		{
-			int index = m_numPlinkoSounds + ( rand() % m_numFnafSounds );
-			m_audioManager.PlayImmediate( index );
-		}
+		// Banque 1 (plinko/destruction) : lecture aléatoire ou séquentielle
+		m_audioManager.SetCurrentBank( 1 );
+		// Séquentiel (round-robin) :
+		m_audioManager.PlayNextInBank();
+		// Ou aléatoire :
+		// m_audioManager.PlayRandomInBank();
 	}
 
-	void PlayBallSpawnSound()
+	void PlaySpecialSound()
 	{
-		PlayBallDestroySound();
+		m_audioManager.SetCurrentBank( 1 );
+		if ( m_audioManager.GetBankSoundCount( 1 ) > 0 )
+			m_audioManager.PlayImmediate( m_audioManager.GetStartIndex( 1 ) ); // premier son de la banque 1
 	}
 
 	static float RandomFloat( float min, float max )
@@ -8401,6 +8412,10 @@ private:
 					zombies.insert( visitorBodyId );
 					sensorsToKick.push_back( s );
 					m_sensorHitCounts[s]++;
+					// BONUS spécial : son si gros multiplicateur
+					if ( m_multipliers[s] > 3.0f )
+						PlaySpecialSound();
+					break;
 				}
 			}
 		}
@@ -8409,7 +8424,7 @@ private:
 			if ( B2_IS_NON_NULL( bodyId ) )
 			{
 				b2DestroyBody( bodyId );
-				PlayBallDestroySound(); // <- destruction = son de destruction
+				PlayBallDestroySound();
 			}
 		}
 
@@ -8453,9 +8468,11 @@ private:
 			b2Circle circ = { { 0, 0 }, ballRadius };
 			b2CreateCircleShape( ball, &sd, &circ );
 
-			PlayBallSpawnSound(); // son spawn balle
+			PlayBallSpawnSound();
 		}
 	}
 };
 
 static int samplePlinkoSample = RegisterSample( "9:16", "PlinkoSample", PlinkoSample::Create );
+
+
