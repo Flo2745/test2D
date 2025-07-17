@@ -161,7 +161,82 @@ private:
 		}
 	}
 };
-static int ZeldaRupee = RegisterSample( "1-Objects", "ZELDA Rupee", ZeldaRupee::Create );
+static int ZeldaRupee = RegisterSample( "Pixel Art", "ZELDA Rupee", ZeldaRupee::Create );
+
+class PixelArtHelloSample : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new PixelArtHelloSample( context );
+	}
+
+	explicit PixelArtHelloSample( SampleContext* context )
+		: Sample( context )
+	{
+		b2World_SetGravity( m_worldId, { 0.0f, 0.0f } ); // ou 0 pour tester en lévitation
+
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 18.0f;
+		}
+
+		CreatePixelArtHELLO();
+	}
+
+private:
+	static constexpr int gridHeight = 5;
+	static constexpr int gridWidth = 29; // 5x5 lettres + espaces
+	static constexpr bool HELLO[gridHeight][gridWidth] = {
+		// H     E     L     L     O
+		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1 },
+		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
+		{ 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
+		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
+		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1 } };
+
+	void CreatePixelArtHELLO()
+	{
+		const float pixelSize = 1.0f;
+		const float startX = -( gridWidth * pixelSize ) * 0.5f + pixelSize * 0.5f;
+		const float startY = +4.0f; // Ajuste pour centrer ou surélever
+
+		for ( int y = 0; y < gridHeight; ++y )
+		{
+			for ( int x = 0; x < gridWidth; ++x )
+			{
+				if ( !HELLO[y][x] )
+					continue;
+
+				b2BodyDef bd = b2DefaultBodyDef();
+				bd.type = b2_dynamicBody;
+				bd.position = { startX + x * pixelSize, startY - y * pixelSize };
+				bd.linearDamping = 2.0f;
+				bd.angularDamping = 2.0f;
+				b2BodyId bodyId = b2CreateBody( m_worldId, &bd );
+
+				b2ShapeDef sd = b2DefaultShapeDef();
+				sd.material = b2DefaultSurfaceMaterial();
+				sd.material.restitution = 0.1f;
+				sd.material.friction = 0.6f;
+				sd.material.customColor = 0xFFD700; // jaune/or
+
+				b2Polygon box = b2MakeBox( pixelSize * 0.5f, pixelSize * 0.5f );
+				b2CreatePolygonShape( bodyId, &sd, &box );
+			}
+		}
+	}
+};
+
+static int pixelArtHelloSample = RegisterSample( "Pixel Art", "HELLO (pixel box2D)", PixelArtHelloSample::Create );
+
+
+
+
+
+
+
 
 class SensorPerfTest : public Sample
 {
@@ -6266,7 +6341,6 @@ private:
 
 static int sampleCageDuplicationImageGuess = RegisterSample( "9:16", "CageDuplicationImageGuess", CageDuplicationImageGuess::Create );
 
-
 class CageEscape : public Sample
 {
 public:
@@ -7906,73 +7980,7 @@ private:
 };
 static int wichyearSample = RegisterSample( "9:16", "Wichyear", Wichyear::Create );
 
-class PixelArtHelloSample : public Sample
-{
-public:
-	static Sample* Create( SampleContext* context )
-	{
-		return new PixelArtHelloSample( context );
-	}
 
-	explicit PixelArtHelloSample( SampleContext* context )
-		: Sample( context )
-	{
-		b2World_SetGravity( m_worldId, { 0.0f, 0.0f } ); // ou 0 pour tester en lévitation
-
-		if ( !m_context->restart )
-		{
-			m_context->camera.m_center = { 0.0f, 0.0f };
-			m_context->camera.m_zoom = 18.0f;
-		}
-
-		CreatePixelArtHELLO();
-	}
-
-private:
-	static constexpr int gridHeight = 5;
-	static constexpr int gridWidth = 29; // 5x5 lettres + espaces
-	static constexpr bool HELLO[gridHeight][gridWidth] = {
-		// H     E     L     L     O
-		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1 },
-		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
-		{ 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
-		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
-		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1 } };
-
-	void CreatePixelArtHELLO()
-	{
-		const float pixelSize = 1.0f;
-		const float startX = -( gridWidth * pixelSize ) * 0.5f + pixelSize * 0.5f;
-		const float startY = +4.0f; // Ajuste pour centrer ou surélever
-
-		for ( int y = 0; y < gridHeight; ++y )
-		{
-			for ( int x = 0; x < gridWidth; ++x )
-			{
-				if ( !HELLO[y][x] )
-					continue;
-
-				b2BodyDef bd = b2DefaultBodyDef();
-				bd.type = b2_dynamicBody;
-				bd.position = { startX + x * pixelSize, startY - y * pixelSize };
-				bd.linearDamping = 2.0f;
-				bd.angularDamping = 2.0f;
-				b2BodyId bodyId = b2CreateBody( m_worldId, &bd );
-
-				b2ShapeDef sd = b2DefaultShapeDef();
-				sd.material = b2DefaultSurfaceMaterial();
-				sd.material.restitution = 0.1f;
-				sd.material.friction = 0.6f;
-				sd.material.customColor = 0xFFD700; // jaune/or
-
-				b2Polygon box = b2MakeBox( pixelSize * 0.5f, pixelSize * 0.5f );
-				b2CreatePolygonShape( bodyId, &sd, &box );
-			}
-		}
-	}
-};
-
-static int pixelArtHelloSample = RegisterSample( "Pixel Art", "HELLO (pixel box2D)", PixelArtHelloSample::Create );
 
 class PlinkoSample : public Sample
 {
@@ -8474,5 +8482,367 @@ private:
 };
 
 static int samplePlinkoSample = RegisterSample( "9:16", "PlinkoSample", PlinkoSample::Create );
+
+class DeuxGroupesTroisPolygonesDyn : public Sample
+{
+public:
+	enum ShapeType
+	{
+		e_circleShape = 0,
+		e_capsuleShape,
+		e_boxShape,
+		e_polygon3,
+		e_polygon4,
+		e_polygon5,
+		e_polygon6,
+		e_polygon7,
+		e_polygon8
+	};
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new DeuxGroupesTroisPolygonesDyn( context );
+	}
+
+	explicit DeuxGroupesTroisPolygonesDyn( SampleContext* context )
+		: Sample( context )
+		, m_shapeType( e_boxShape )
+		, m_density( 1.0f )
+		, m_friction( 0.0f )
+		, m_restitution( 1.0f )
+		, m_linearDamping( 0.0f )
+		, m_angularDamping( 0.0f )
+		, m_gravityScale( 1.0f )
+		, m_isBullet( false )
+		, m_enableHitEvents( true )
+		, m_motionLocks{ false, false, false }
+		, m_gravity{ 0.0f, -10.0f }
+	{
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 8.0f };
+			m_context->camera.m_zoom = 20.0f;
+		}
+		b2World_SetGravity( m_worldId, m_gravity );
+
+		m_valueTop[0] = 10;
+		m_valueTop[1] = 1;
+		m_valueTop[2] = 1;
+		m_valueBottom[0] = 35;
+		m_valueBottom[1] = 25;
+		m_valueBottom[2] = 15;
+
+		CreatePolygons();
+		CreateDynamicShapes();
+	}
+
+	void CreatePolygons()
+	{
+		for ( int i = 0; i < 3; ++i )
+		{
+			if ( B2_IS_NON_NULL( m_bodyIdTop[i] ) )
+				b2DestroyBody( m_bodyIdTop[i] );
+			if ( B2_IS_NON_NULL( m_bodyIdBottom[i] ) )
+				b2DestroyBody( m_bodyIdBottom[i] );
+			m_bodyIdTop[i] = b2_nullBodyId;
+			m_bodyIdBottom[i] = b2_nullBodyId;
+		}
+
+		// --- Paramètres des polygones
+		const float centerX = 0.0f;
+		const float polyHalfWidth = 8.0f, polyHalfHeight = 1.25f;
+		const float deltaY = polyHalfHeight * 2.0f;
+		const float groupSpacing = 2.0f; // Espace entre les deux groupes
+
+		// --- Calcule la hauteur du bloc groupe (3 polygones + 2 espaces)
+		const float groupBlockHeight = 3 * deltaY;
+
+		// --- On centre le groupe du haut sur Y+ et le groupe du bas sur Y-
+		// (par exemple, écran Box2D de 0 à 24 en Y, centre vers 15 et 5)
+		const float y_center_top = 15.0f + groupBlockHeight * 0.5f + groupSpacing * 0.5f;
+		const float y_center_bot = 5.0f - groupBlockHeight * 0.5f - groupSpacing * 0.5f;
+
+		m_groupTopY = y_center_top;
+		m_groupBottomY = y_center_bot;
+
+		for ( int i = 0; i < 3; ++i )
+		{
+			b2BodyDef bd = b2DefaultBodyDef();
+
+			// --- Groupe du haut : Y relatif au centre du groupe du haut
+			bd.position = { centerX, y_center_top - ( i - 1 ) * deltaY };
+			if ( m_valueTop[i] > 0 )
+			{
+				m_bodyIdTop[i] = b2CreateBody( m_worldId, &bd );
+				b2Polygon poly = b2MakeBox( polyHalfWidth, polyHalfHeight );
+				b2ShapeDef sd = b2DefaultShapeDef();
+				sd.enableHitEvents = true;
+				sd.material.customColor = 0xff22bbff - ( i * 0x00220044 );
+				b2CreatePolygonShape( m_bodyIdTop[i], &sd, &poly );
+			}
+
+			// --- Groupe du bas : Y relatif au centre du groupe du bas
+			bd.position = { centerX, y_center_bot - ( i - 1 ) * deltaY };
+			if ( m_valueBottom[i] > 0 )
+			{
+				m_bodyIdBottom[i] = b2CreateBody( m_worldId, &bd );
+				b2Polygon poly = b2MakeBox( polyHalfWidth, polyHalfHeight );
+				b2ShapeDef sd = b2DefaultShapeDef();
+				sd.enableHitEvents = true;
+				sd.material.customColor = 0xffffbb22 - ( i * 0x00113300 );
+				b2CreatePolygonShape( m_bodyIdBottom[i], &sd, &poly );
+			}
+		}
+	}
+
+
+	void CreateDynamicShapes()
+	{
+		if ( B2_IS_NON_NULL( m_dynIdTop ) )
+			b2DestroyBody( m_dynIdTop );
+		if ( B2_IS_NON_NULL( m_dynIdBottom ) )
+			b2DestroyBody( m_dynIdBottom );
+
+		const float centerX = 0.0f;
+		const float spawnAbove = 6.0f;
+		const float polyHalfHeight = 1.0f;
+		const float deltaY = polyHalfHeight * 2.0f;
+
+		// Haut
+		{
+			b2BodyDef bd = b2DefaultBodyDef();
+			bd.type = b2_dynamicBody;
+			bd.position = { centerX, m_groupTopY + spawnAbove };
+			bd.gravityScale = m_gravityScale;
+			bd.linearDamping = m_linearDamping;
+			bd.angularDamping = m_angularDamping;
+			bd.isBullet = m_isBullet;
+			bd.motionLocks = m_motionLocks;
+			m_dynIdTop = b2CreateBody( m_worldId, &bd );
+
+			b2ShapeDef sd = b2DefaultShapeDef();
+			sd.density = m_density;
+			sd.material = b2DefaultSurfaceMaterial();
+			sd.material.friction = m_friction;
+			sd.material.restitution = m_restitution;
+			sd.enableHitEvents = m_enableHitEvents;
+			sd.material.customColor = 0xffbb4444;
+			AddShapeForType( m_dynIdTop, sd, m_shapeType );
+		}
+		// Bas
+		{
+			b2BodyDef bd = b2DefaultBodyDef();
+			bd.type = b2_dynamicBody;
+			bd.position = { centerX, m_groupBottomY + 2 * deltaY + spawnAbove };
+			bd.gravityScale = m_gravityScale;
+			bd.linearDamping = m_linearDamping;
+			bd.angularDamping = m_angularDamping;
+			bd.isBullet = m_isBullet;
+			bd.motionLocks = m_motionLocks;
+			m_dynIdBottom = b2CreateBody( m_worldId, &bd );
+
+			b2ShapeDef sd = b2DefaultShapeDef();
+			sd.density = m_density;
+			sd.material = b2DefaultSurfaceMaterial();
+			sd.material.friction = m_friction;
+			sd.material.restitution = m_restitution;
+			sd.enableHitEvents = m_enableHitEvents;
+			sd.material.customColor = 0xff4444bb;
+			AddShapeForType( m_dynIdBottom, sd, m_shapeType );
+		}
+	}
+
+	void AddShapeForType( b2BodyId bodyId, b2ShapeDef& sd, ShapeType shapeType )
+	{
+		const float RADIUS = 1.3f;
+		if ( shapeType == e_circleShape )
+		{
+			b2Circle c = { { 0.0f, 0.0f }, RADIUS };
+			b2CreateCircleShape( bodyId, &sd, &c );
+		}
+		else if ( shapeType == e_capsuleShape )
+		{
+			b2Capsule cap = { { -RADIUS, 0.0f }, { RADIUS, 0.0f }, RADIUS * 0.5f };
+			b2CreateCapsuleShape( bodyId, &sd, &cap );
+		}
+		else if ( shapeType == e_boxShape )
+		{
+			b2Polygon box = b2MakeBox( RADIUS, RADIUS );
+			b2CreatePolygonShape( bodyId, &sd, &box );
+		}
+		else
+		{
+			int sides = int( shapeType ) - int( e_polygon3 ) + 3;
+			std::vector<b2Vec2> vertices( sides );
+			const float twoPi = 2.0f * b2_pi;
+			for ( int i = 0; i < sides; ++i )
+				vertices[i] = { std::cos( i * twoPi / sides ) * RADIUS, std::sin( i * twoPi / sides ) * RADIUS };
+			b2Hull hull = b2ComputeHull( vertices.data(), sides );
+			if ( hull.count > 0 )
+			{
+				b2Polygon poly = b2MakePolygon( &hull, 0 );
+				b2CreatePolygonShape( bodyId, &sd, &poly );
+			}
+		}
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		bool destroyed = false;
+
+		b2ContactEvents contactEvents = b2World_GetContactEvents( m_worldId );
+		for ( int i = 0; i < contactEvents.hitCount; ++i )
+		{
+			const b2ContactHitEvent& hit = contactEvents.hitEvents[i];
+			b2BodyId bodyA = b2Shape_GetBody( hit.shapeIdA );
+			b2BodyId bodyB = b2Shape_GetBody( hit.shapeIdB );
+
+			// Groupe du haut
+			for ( int j = 0; j < 3; ++j )
+			{
+				if ( ( B2_ID_EQUALS( bodyA, m_bodyIdTop[j] ) &&
+					   ( B2_ID_EQUALS( bodyB, m_dynIdTop ) || B2_ID_EQUALS( bodyB, m_dynIdBottom ) ) ) ||
+					 ( B2_ID_EQUALS( bodyB, m_bodyIdTop[j] ) &&
+					   ( B2_ID_EQUALS( bodyA, m_dynIdTop ) || B2_ID_EQUALS( bodyA, m_dynIdBottom ) ) ) )
+				{
+					if ( m_valueTop[j] > 0 )
+						m_valueTop[j]--;
+				}
+			}
+			// Groupe du bas
+			for ( int j = 0; j < 3; ++j )
+			{
+				if ( ( B2_ID_EQUALS( bodyA, m_bodyIdBottom[j] ) &&
+					   ( B2_ID_EQUALS( bodyB, m_dynIdTop ) || B2_ID_EQUALS( bodyB, m_dynIdBottom ) ) ) ||
+					 ( B2_ID_EQUALS( bodyB, m_bodyIdBottom[j] ) &&
+					   ( B2_ID_EQUALS( bodyA, m_dynIdTop ) || B2_ID_EQUALS( bodyA, m_dynIdBottom ) ) ) )
+				{
+					if ( m_valueBottom[j] > 0 )
+						m_valueBottom[j]--;
+				}
+			}
+		}
+
+		// --- Destruction des bodies à 0 ---
+		for ( int j = 0; j < 3; ++j )
+		{
+			if ( m_valueTop[j] <= 0 && B2_IS_NON_NULL( m_bodyIdTop[j] ) )
+			{
+				b2DestroyBody( m_bodyIdTop[j] );
+				m_bodyIdTop[j] = b2_nullBodyId;
+				m_valueTop[j] = 0;
+				destroyed = true;
+			}
+			if ( m_valueBottom[j] <= 0 && B2_IS_NON_NULL( m_bodyIdBottom[j] ) )
+			{
+				b2DestroyBody( m_bodyIdBottom[j] );
+				m_bodyIdBottom[j] = b2_nullBodyId;
+				m_valueBottom[j] = 0;
+				destroyed = true;
+			}
+		}
+
+		// Si besoin, tu peux ajouter feedback audio/effets ici
+	}
+
+	void UpdateGui() override
+	{
+		ImGui::SetNextWindowPos( ImVec2( 16, 16 ), ImGuiCond_FirstUseEver );
+		ImGui::SetNextWindowSize( ImVec2( 320, 340 ) );
+		ImGui::Begin( "DynShape Settings", nullptr, ImGuiWindowFlags_NoResize );
+
+		const char* shapeNames[] = { "Cercle",	  "Capsule",  "Box",	   "Triangle", "Quad",
+									 "Pentagone", "Hexagone", "Heptagone", "Octogone" };
+		int st = int( m_shapeType );
+		if ( ImGui::Combo( "Forme", &st, shapeNames, IM_ARRAYSIZE( shapeNames ) ) )
+		{
+			m_shapeType = ShapeType( st );
+			CreateDynamicShapes();
+		}
+		bool relaunch = false;
+		relaunch |= ImGui::SliderFloat( "Densité", &m_density, 0.1f, 5.0f, "%.2f" );
+		relaunch |= ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 2.0f, "%.2f" );
+		relaunch |= ImGui::SliderFloat( "Restitution", &m_restitution, 0.0f, 2.0f, "%.2f" );
+		relaunch |= ImGui::SliderFloat( "Linear Damping", &m_linearDamping, 0.0f, 3.0f, "%.2f" );
+		relaunch |= ImGui::SliderFloat( "Angular Damping", &m_angularDamping, 0.0f, 3.0f, "%.2f" );
+		relaunch |= ImGui::SliderFloat( "Gravity Scale", &m_gravityScale, 0.0f, 4.0f, "%.2f" );
+		relaunch |= ImGui::Checkbox( "Bullet", &m_isBullet );
+		relaunch |= ImGui::Checkbox( "HitEvents", &m_enableHitEvents );
+		bool lockX = m_motionLocks.linearX, lockY = m_motionLocks.linearY, lockRot = m_motionLocks.angularZ;
+		if ( ImGui::Checkbox( "Lock X", &lockX ) | ImGui::Checkbox( "Lock Y", &lockY ) | ImGui::Checkbox( "Lock Rot", &lockRot ) )
+		{
+			m_motionLocks.linearX = lockX;
+			m_motionLocks.linearY = lockY;
+			m_motionLocks.angularZ = lockRot;
+			relaunch = true;
+		}
+		if ( ImGui::Button( "Relancer" ) )
+			relaunch = true;
+		ImGui::End();
+		if ( relaunch )
+			CreateDynamicShapes();
+
+		// Overlay chiffres
+		ImFont* bigFont = m_context->draw.m_largeFont ? m_context->draw.m_largeFont : ImGui::GetFont();
+		ImDrawList* dl = ImGui::GetForegroundDrawList();
+
+		for ( int grp = 0; grp < 2; ++grp )
+		{
+			b2BodyId* ids = ( grp == 0 ) ? m_bodyIdTop : m_bodyIdBottom;
+			int* values = ( grp == 0 ) ? m_valueTop : m_valueBottom;
+			for ( int i = 0; i < 3; ++i )
+			{
+				if ( !B2_IS_NON_NULL( ids[i] ) )
+					continue;
+				b2Vec2 pos = b2Body_GetPosition( ids[i] );
+				b2Vec2 screen = m_context->camera.ConvertWorldToScreen( pos );
+
+				char txt[16];
+				snprintf( txt, sizeof( txt ), "%d", values[i] );
+				ImGui::PushFont( bigFont );
+				ImVec2 ts = ImGui::CalcTextSize( txt );
+				ImGui::PopFont();
+
+				float x = screen.x - ts.x * 0.5f;
+				float y = screen.y - ts.y * 0.5f;
+				for ( int dx = -2; dx <= 2; ++dx )
+					for ( int dy = -2; dy <= 2; ++dy )
+						if ( dx || dy )
+							dl->AddText( bigFont, bigFont->FontSize, ImVec2( x + dx, y + dy ), IM_COL32( 0, 0, 0, 150 ), txt );
+				dl->AddText( bigFont, bigFont->FontSize, ImVec2( x, y ), IM_COL32( 255, 255, 255, 255 ), txt );
+			}
+		}
+	}
+
+private:
+	b2BodyId m_bodyIdTop[3]{ b2_nullBodyId, b2_nullBodyId, b2_nullBodyId };
+	b2BodyId m_bodyIdBottom[3]{ b2_nullBodyId, b2_nullBodyId, b2_nullBodyId };
+	int m_valueTop[3];
+	int m_valueBottom[3];
+
+	b2BodyId m_dynIdTop{ b2_nullBodyId };
+	b2BodyId m_dynIdBottom{ b2_nullBodyId };
+
+	float m_groupTopY = 0.0f;
+	float m_groupBottomY = 0.0f;
+
+	ShapeType m_shapeType;
+	float m_density, m_friction, m_restitution;
+	float m_linearDamping, m_angularDamping;
+	float m_gravityScale;
+	bool m_isBullet;
+	bool m_enableHitEvents;
+	b2MotionLocks m_motionLocks;
+	b2Vec2 m_gravity;
+};
+
+static int sampleDeuxGroupesTroisPolygonesDyn =
+	RegisterSample( "9:16", "DeuxGroupesTroisPolygonesDyn", DeuxGroupesTroisPolygonesDyn::Create );
+
+
+
+
 
 

@@ -105,6 +105,8 @@ set(BOX2D_SAMPLE_FILES
 	pixelart.cpp
 	pixelart.h
 	blueprint.cpp
+	pixel_art.cpp
+	pixel_art.h
 )
 
 add_executable(samples ${BOX2D_SAMPLE_FILES})
