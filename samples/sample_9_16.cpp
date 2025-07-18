@@ -1,4 +1,5 @@
 ﻿#include "audiomanager.h"
+#include "pixel_art.h"
 #include "benchmarks.h"
 #include "draw.h"
 #include "human.h"
@@ -29,6 +30,545 @@ inline bool operator<( b2BodyId a, b2BodyId b )
 	uint64_t ub = b2StoreBodyId( b );
 	return ua < ub;
 }
+
+class ZeldaRupee : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new ZeldaRupee( context );
+	}
+
+	explicit ZeldaRupee( SampleContext* context )
+		: Sample( context )
+	{
+		// Désactiver la gravité pour observer le rupee en lévitation
+		b2World_SetGravity( m_worldId, { 0.0f, 0.0f } );
+
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 10.0f;
+		}
+
+		// Créer le rupee avec des couleurs personnalisées
+		CreateRupeeShapeProperlyJoined();
+	}
+
+private:
+	// Fonction pour calculer l'intersection de deux segments
+	static b2Vec2 IntersectSegments( const b2Vec2& A1, const b2Vec2& A2, const b2Vec2& B1, const b2Vec2& B2 )
+	{
+		float x1 = A1.x, y1 = A1.y;
+		float x2 = A2.x, y2 = A2.y;
+		float x3 = B1.x, y3 = B1.y;
+		float x4 = B2.x, y4 = B2.y;
+
+		float denom = ( y4 - y3 ) * ( x2 - x1 ) - ( x4 - x3 ) * ( y2 - y1 );
+		if ( fabsf( denom ) < 1e-8f )
+		{
+			return A1;
+		}
+
+		float t = ( ( x4 - x3 ) * ( y1 - y3 ) - ( y4 - y3 ) * ( x1 - x3 ) ) / denom;
+		float ix = x1 + t * ( x2 - x1 );
+		float iy = y1 + t * ( y2 - y1 );
+
+		return { ix, iy };
+	}
+
+	// Fonction pour calculer un polygone décalé
+	static void ComputeOffsetPolygon( const b2Vec2* p, int n, float offsetOut, b2Vec2* out )
+	{
+		std::vector<b2Vec2> offsetLineStart( n );
+		std::vector<b2Vec2> offsetLineEnd( n );
+
+		for ( int i = 0; i < n; i++ )
+		{
+			int j = ( i + 1 ) % n;
+			b2Vec2 edge = { p[j].x - p[i].x, p[j].y - p[i].y };
+
+			b2Vec2 normal = { -edge.y, edge.x };
+			float length = b2Length( normal );
+			if ( length > 1e-8f )
+			{
+				float invLen = offsetOut / length;
+				normal = { normal.x * invLen, normal.y * invLen };
+			}
+
+			offsetLineStart[i] = { p[i].x + normal.x, p[i].y + normal.y };
+			offsetLineEnd[i] = { p[j].x + normal.x, p[j].y + normal.y };
+		}
+
+		for ( int i = 0; i < n; i++ )
+		{
+			int im1 = ( i + n - 1 ) % n;
+			out[i] = IntersectSegments( offsetLineStart[im1], offsetLineEnd[im1], offsetLineStart[i], offsetLineEnd[i] );
+		}
+	}
+
+	// Fonction pour créer le rupee avec des couleurs personnalisées
+	void CreateRupeeShapeProperlyJoined()
+	{
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = { 0.0f, 0.0f };
+		bd.angularDamping = 0.2f;
+		b2BodyId bodyId = b2CreateBody( m_worldId, &bd );
+
+		b2Vec2 rupee[6] = { { 0.0f, 1.4f }, { 0.7f, 0.7f }, { 0.7f, -0.7f }, { 0.0f, -1.4f }, { -0.7f, -0.7f }, { -0.7f, 0.7f } };
+
+		// Définir la couleur pour le polygone central
+		b2SurfaceMaterial centerMaterial = b2DefaultSurfaceMaterial();
+		centerMaterial.friction = 0.3f;
+		centerMaterial.restitution = 0.1f;
+		centerMaterial.customColor = b2_colorDarkSeaGreen;
+
+		b2ShapeDef centerSd = b2DefaultShapeDef();
+		centerSd.density = 1.0f;
+		centerSd.material = centerMaterial;
+
+		b2Hull coreHull = b2ComputeHull( rupee, 6 );
+		if ( coreHull.count > 2 )
+		{
+			b2Polygon corePolygon = b2MakePolygon( &coreHull, 0.0f );
+			b2CreatePolygonShape( bodyId, &centerSd, &corePolygon );
+		}
+
+		float offsetDist = 0.4f;
+		b2Vec2 offsetPoly[6];
+		ComputeOffsetPolygon( rupee, 6, offsetDist, offsetPoly );
+
+		// Définir la couleur pour les facettes
+		b2SurfaceMaterial facetMaterial = b2DefaultSurfaceMaterial();
+		facetMaterial.friction = 0.3f;
+		facetMaterial.restitution = 0.1f;
+		facetMaterial.customColor = b2_colorLightSteelBlue;
+
+		b2ShapeDef facetSd = b2DefaultShapeDef();
+		facetSd.material = facetMaterial;
+
+		for ( int i = 0; i < 6; i++ )
+		{
+			int j = ( i + 1 ) % 6;
+			b2Vec2 quad[4] = { rupee[i], rupee[j], offsetPoly[j], offsetPoly[i] };
+
+			b2Hull facetHull = b2ComputeHull( quad, 4 );
+			if ( facetHull.count >= 3 )
+			{
+				b2Polygon facetPolygon = b2MakePolygon( &facetHull, 0.0f );
+				b2CreatePolygonShape( bodyId, &facetSd, &facetPolygon );
+			}
+		}
+	}
+};
+static int ZeldaRupee = RegisterSample( "Pixel Art", "ZELDA Rupee", ZeldaRupee::Create );
+
+class PixelArtShowcaseSample : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new PixelArtShowcaseSample( context );
+	}
+
+	explicit PixelArtShowcaseSample( SampleContext* context )
+		: Sample( context )
+	{
+		b2World_SetGravity( m_worldId, { 0.0f, -1.0f } );
+
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 20.0f;
+		}
+
+		CreateGround();
+		CreateAllPixelArtSpritesInGrid( 1.0f, 4.0f, 3 ); // (pixelSize, spacing, nb colonnes)
+	}
+
+	void UpdateGui() override
+	{
+		const auto names = PixelArtColor_GetAllNames();
+		if ( names.empty() )
+			return;
+
+		// Optionnel : Combo pour sélectionner un sprite individuel (détruit la grille pour n'en afficher qu'un)
+		std::vector<const char*> cstr_names;
+		for ( const auto& s : names )
+			cstr_names.push_back( s.c_str() );
+		int current = m_spriteIndex;
+		if ( ImGui::Combo( "Sprite (afficher seul)", &current, cstr_names.data(), (int)cstr_names.size() ) )
+		{
+			m_spriteIndex = current;
+			DestroyAllPixelArtBodies();
+			const PixelArtColor* sprite = PixelArtColor_GetByName( names[m_spriteIndex] );
+			if ( sprite )
+			{
+				b2BodyId id = CreatePixelArtBody( m_worldId, *sprite, 1.0f, { 0.0f, 8.0f } );
+				m_pixelArtBodies.push_back( id );
+			}
+		}
+		if ( ImGui::Button( "Afficher toute la grille" ) )
+		{
+			DestroyAllPixelArtBodies();
+			CreateAllPixelArtSpritesInGrid( 1.0f, 4.0f, 3 );
+		}
+	}
+
+private:
+	int m_spriteIndex = 0;
+	std::vector<b2BodyId> m_pixelArtBodies;
+	b2BodyId m_groundBody = b2_nullBodyId;
+
+	void DestroyAllPixelArtBodies()
+	{
+		for ( b2BodyId id : m_pixelArtBodies )
+			if ( B2_IS_NON_NULL( id ) )
+				b2DestroyBody( id );
+		m_pixelArtBodies.clear();
+	}
+
+	void CreateGround()
+	{
+		b2BodyDef groundDef = b2DefaultBodyDef();
+		groundDef.position = { 0.0f, -100.0f }; // position ajustée
+		m_groundBody = b2CreateBody( m_worldId, &groundDef );
+
+		b2Polygon groundBox = b2MakeBox( 60.0f, 1.0f );
+		b2ShapeDef sd = b2DefaultShapeDef();
+		b2CreatePolygonShape( m_groundBody, &sd, &groundBox );
+	}
+
+	void CreateAllPixelArtSpritesInGrid( float pixelSize = 1.0f, float spacing = 3.0f, int gridCols = 3 )
+	{
+		DestroyAllPixelArtBodies();
+
+		const auto names = PixelArtColor_GetAllNames();
+		if ( names.empty() )
+			return;
+
+		// 1. Cherche la taille max
+		int maxWidth = 0, maxHeight = 0;
+		std::vector<const PixelArtColor*> sprites;
+		for ( const auto& name : names )
+		{
+			auto* art = PixelArtColor_GetByName( name );
+			if ( art )
+			{
+				sprites.push_back( art );
+				maxWidth = std::max( maxWidth, art->width );
+				maxHeight = std::max( maxHeight, art->height );
+			}
+		}
+
+		int gridRows = (int)std::ceil( float( sprites.size() ) / gridCols );
+
+		// Espace total d'une cellule
+		float cellW = maxWidth * pixelSize + spacing;
+		float cellH = maxHeight * pixelSize + spacing;
+
+		float originX = -( ( gridCols - 1 ) * cellW ) * 0.5f;
+		float originY = ( ( gridRows - 1 ) * cellH ) * 0.5f + 10.0f;
+
+		int idx = 0;
+		for ( int row = 0; row < gridRows; ++row )
+		{
+			for ( int col = 0; col < gridCols; ++col )
+			{
+				if ( idx >= (int)sprites.size() )
+					return;
+				const PixelArtColor* art = sprites[idx];
+				float offsetX = ( maxWidth - art->width ) * pixelSize * 0.5f;
+				float offsetY = ( maxHeight - art->height ) * pixelSize * 0.5f;
+				b2Vec2 pos = { originX + col * cellW + ( art->width * pixelSize ) * 0.5f + offsetX,
+							   originY - row * cellH - ( art->height * pixelSize ) * 0.5f - offsetY };
+				b2BodyId id = CreatePixelArtBody( m_worldId, *art, pixelSize, pos );
+				m_pixelArtBodies.push_back( id );
+				++idx;
+			}
+		}
+	}
+};
+
+static int pixelArtShowcaseSample = RegisterSample( "Pixel Art", "Showcase (grille weapons)", PixelArtShowcaseSample::Create );
+
+class WeaponsVS : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new WeaponsVS( context );
+	}
+	explicit WeaponsVS( SampleContext* context )
+		: Sample( context )
+	{
+		b2World_SetGravity( m_worldId, { 0.0f, -10.0f } );
+
+		if ( !m_context->restart )
+		{
+			m_context->camera.m_center = { 0.0f, 0.0f };
+			m_context->camera.m_zoom = 20.0f;
+		}
+
+		CreateCage();
+		CreateCharactersWeaponsGrid();
+	}
+
+	void UpdateGui() override
+	{
+		if ( ImGui::Button( "Reset VS" ) )
+		{
+			DestroyAllCharactersWeapons();
+			CreateCharactersWeaponsGrid();
+		}
+	}
+
+private:
+	static constexpr uint32_t CATEGORY_WEAPON = 0x0002;
+	static constexpr uint32_t CATEGORY_PLAYER = 0x0004;
+	static constexpr uint32_t CATEGORY_CAGE = 0x0008;
+	static constexpr float kPixelSize = 0.2f;
+	static constexpr float kCharacterRadius = 0.85f;
+
+	struct Duo
+	{
+		b2BodyId character = b2_nullBodyId;
+		b2BodyId weapon = b2_nullBodyId;
+		b2JointId joint = b2_nullJointId;
+	};
+
+	std::vector<Duo> m_duos;
+
+	struct WeaponConfig
+	{
+		const char* name;
+		float pixelSize;
+		float characterRadius;
+		float attachOffset;
+		float restitution, friction;
+		float linearDamping, angularDamping;
+		int attachPixelX, attachPixelY;
+		float density;
+		bool enableMotor;
+		float motorSpeed;
+		float maxMotorTorque;
+		bool enableLimit;
+		float lowerAngle, upperAngle;
+	};
+
+	static constexpr WeaponConfig s_weaponConfigs[] = {
+		// name              pxSz      radius off   rest fric linD angD  attX attY density  motor  spd   torque limit lA   uA
+		{ "DIAMOND_SWORD", kPixelSize, kCharacterRadius, 0.0f, 1.0f, 0.5f, 0.11f, 0.08f, 0, 15, 0.001f, true, 5.0f, 120.0f, false,
+		  0.0f, 0.0f },
+		{ "DIAMOND_AXE", kPixelSize, kCharacterRadius, 0.0f, 0.8f, 0.7f, 0.13f, 0.11f, 0, 15, 0.001f, true, 1.5f, 200.0f, false,
+		  0.0f, 0.0f },
+		{ "DIAMOND_DAGGER", kPixelSize, kCharacterRadius, 0.0f, 1.2f, 0.3f, 0.07f, 0.06f, 0, 15, 0.001f, true, 15.0f, 80.0f,
+		  false, 0.0f, 0.0f },
+		{ "DIAMOND_SPEAR", kPixelSize, kCharacterRadius, 0.0f, 0.9f, 0.55f, 0.11f, 0.10f, 0, 15, 0.001f, true, 3.5f, 100.0f,
+		  false, 0.0f, 0.0f },
+		{ "BOW", kPixelSize, kCharacterRadius, 0.0f, 1.0f, 0.4f, 0.09f, 0.07f, 8, 8, 0.001f, false, 0.0f, 0.0f, true, 0.0f,
+		  0.0f },
+		{ "TRIDENT", kPixelSize, kCharacterRadius, 0.0f, 0.9f, 0.45f, 0.10f, 0.09f, 0, 15, 0.001f, true, 4.0f, 90.0f, false, 0.0f,
+		  0.0f },
+		{ "ARROW_16", kPixelSize, kCharacterRadius, 0.0f, 1.0f, 0.4f, 0.10f, 0.06f, 0, 15, 0.001f, true, 8.0f, 50.0f, false, 0.0f,
+		  0.0f },
+		{ "CROSSBOW", kPixelSize, kCharacterRadius, 1.0f, 1.0f, 0.6f, 0.10f, 0.08f, 0, 15, 0.001f, true, 2.5f, 70.0f, false, 0.0f,
+		  0.0f },
+		{ "CROSSBOWFIREWORK", kPixelSize, kCharacterRadius, 1.0f, 1.0f, 0.6f, 0.10f, 0.09f, 0, 15, 0.001f, true, 4.0f, 90.0f,
+		  false, 0.0f, 0.0f } };
+
+	// Pour toutes les armes sauf l'arc, attache au pixel en bas à gauche
+	b2Vec2 ComputeWeaponAttachPoint( const PixelArtColor* art, float pixelSize )
+	{
+		int px = 0;
+		int py = art->height - 1;
+		float localX = ( (float)px + 0.5f - art->width * 0.5f ) * pixelSize;
+		float localY = ( art->height * 0.5f - ( (float)py + 0.5f ) ) * pixelSize;
+		return { localX, localY };
+	}
+
+	// Pour l'arc et autres configs spéciales : garde le système attachPixelX/attachPixelY
+	b2Vec2 ComputeWeaponAttachPointCustom( const PixelArtColor* art, float pixelSize, int px, int py )
+	{
+		float localX = ( (float)px + 0.5f - art->width * 0.5f ) * pixelSize;
+		float localY = ( art->height * 0.5f - ( (float)py + 0.5f ) ) * pixelSize;
+		return { localX, localY };
+	}
+
+	void DestroyAllCharactersWeapons()
+	{
+		for ( auto& d : m_duos )
+		{
+			if ( B2_IS_NON_NULL( d.joint ) )
+				b2DestroyJoint( d.joint );
+			if ( B2_IS_NON_NULL( d.weapon ) )
+				b2DestroyBody( d.weapon );
+			if ( B2_IS_NON_NULL( d.character ) )
+				b2DestroyBody( d.character );
+		}
+		m_duos.clear();
+	}
+
+	void CreateCage()
+	{
+		const float cageWidth = 60.0f;
+		const float cageHeight = 60.0f;
+		const float thickness = 1.0f;
+		const float cageYOffset = -cageHeight * 0.5f;
+
+		const float floorY = -thickness * 0.5f + cageYOffset;
+		const float ceilingY = cageHeight - thickness * 0.5f + cageYOffset;
+		const float leftX = -cageWidth * 0.5f + thickness * 0.5f;
+		const float rightX = cageWidth * 0.5f - thickness * 0.5f;
+		const float centerY = cageHeight * 0.5f + cageYOffset;
+
+		b2ShapeDef sd = b2DefaultShapeDef();
+		sd.filter.categoryBits = CATEGORY_CAGE;
+		sd.filter.maskBits = CATEGORY_CAGE | CATEGORY_PLAYER;
+		sd.material.restitution = 1.0f;
+
+		// Sol
+		b2BodyDef floorDef = b2DefaultBodyDef();
+		floorDef.position = { 0.0f, floorY };
+		b2BodyId floorId = b2CreateBody( m_worldId, &floorDef );
+		b2Polygon groundBox = b2MakeBox( cageWidth * 0.5f, thickness * 0.5f );
+		b2CreatePolygonShape( floorId, &sd, &groundBox );
+
+		// Mur gauche
+		b2BodyDef leftDef = b2DefaultBodyDef();
+		leftDef.position = { leftX, centerY };
+		b2BodyId leftId = b2CreateBody( m_worldId, &leftDef );
+		b2Polygon leftWall = b2MakeBox( thickness * 0.5f, cageHeight * 0.5f );
+		b2CreatePolygonShape( leftId, &sd, &leftWall );
+
+		// Mur droit
+		b2BodyDef rightDef = b2DefaultBodyDef();
+		rightDef.position = { rightX, centerY };
+		b2BodyId rightId = b2CreateBody( m_worldId, &rightDef );
+		b2Polygon rightWall = b2MakeBox( thickness * 0.5f, cageHeight * 0.5f );
+		b2CreatePolygonShape( rightId, &sd, &rightWall );
+
+		// Plafond
+		b2BodyDef ceilDef = b2DefaultBodyDef();
+		ceilDef.position = { 0.0f, ceilingY };
+		b2BodyId ceilId = b2CreateBody( m_worldId, &ceilDef );
+		b2Polygon ceilBox = b2MakeBox( cageWidth * 0.5f, thickness * 0.5f );
+		b2CreatePolygonShape( ceilId, &sd, &ceilBox );
+	}
+
+	b2BodyId CreatePixelArtBody_Filter( b2WorldId worldId, const PixelArtColor& art, float pixelSize, b2Vec2 origin,
+										float linearDamping, float angularDamping, float restitution, float friction,
+										uint32_t categoryBits, uint32_t maskBits, float density )
+	{
+		b2BodyDef bd = b2DefaultBodyDef();
+		bd.type = b2_dynamicBody;
+		bd.position = origin;
+		bd.linearDamping = linearDamping;
+		bd.angularDamping = angularDamping;
+		b2BodyId bodyId = b2CreateBody( worldId, &bd );
+
+		const float startX = -( art.width * pixelSize ) * 0.5f + pixelSize * 0.5f;
+		const float startY = ( art.height - 1 ) * pixelSize * 0.5f;
+
+		for ( int y = 0; y < art.height; ++y )
+		{
+			for ( int x = 0; x < art.width; ++x )
+			{
+				uint32_t color = art.at( x, y );
+				if ( color == 0 )
+					continue;
+				b2ShapeDef sd = b2DefaultShapeDef();
+				sd.material = b2DefaultSurfaceMaterial();
+				sd.density = density;
+				sd.material.restitution = restitution;
+				sd.material.friction = friction;
+				sd.material.customColor = color;
+				sd.isSensor = false;
+				sd.filter.categoryBits = categoryBits;
+				sd.filter.maskBits = maskBits;
+				float px = startX + static_cast<float>( x ) * pixelSize;
+				float py = startY - static_cast<float>( y ) * pixelSize;
+				b2Polygon box = b2MakeOffsetBox( pixelSize * 0.5f, pixelSize * 0.5f, { px, py }, b2MakeRot( 0 ) );
+				b2CreatePolygonShape( bodyId, &sd, &box );
+			}
+		}
+		return bodyId;
+	}
+
+	void CreateCharactersWeaponsGrid()
+	{
+		DestroyAllCharactersWeapons();
+
+		constexpr int gridCols = 3;
+		constexpr int nWeapons = sizeof( s_weaponConfigs ) / sizeof( WeaponConfig );
+		const float cellW = 8.5f;
+		const float cellH = 8.0f;
+		const float baseY = 11.0f;
+
+		for ( int i = 0; i < nWeapons; ++i )
+		{
+			const auto& cfg = s_weaponConfigs[i];
+			const PixelArtColor* weaponArt = PixelArtColor_GetByName( cfg.name );
+			if ( !weaponArt )
+				continue;
+
+			int col = i % gridCols;
+			int row = i / gridCols;
+
+			b2Vec2 center = { -( gridCols - 1 ) * cellW * 0.5f + col * cellW, baseY - row * cellH };
+
+			// 1. Création du personnage (cercle)
+			b2BodyDef charDef = b2DefaultBodyDef();
+			charDef.type = b2_dynamicBody;
+			charDef.position = center;
+			b2BodyId characterBody = b2CreateBody( m_worldId, &charDef );
+
+			b2ShapeDef charShape = b2DefaultShapeDef();
+			charShape.density = 1.2f;
+			charShape.material.restitution = 1.01f;
+			charShape.material.friction = 0.2f;
+			charShape.filter.categoryBits = CATEGORY_PLAYER;
+			charShape.filter.maskBits = CATEGORY_CAGE | CATEGORY_PLAYER;
+			b2Circle charCircle = { { 0.0f, 0.0f }, kCharacterRadius };
+			b2CreateCircleShape( characterBody, &charShape, &charCircle );
+
+			// 2. Arme (aucune collision : maskBits = 0)
+			b2Vec2 weaponPos = center;
+			b2BodyId weaponBody =
+				CreatePixelArtBody_Filter( m_worldId, *weaponArt, cfg.pixelSize, weaponPos, cfg.linearDamping, cfg.angularDamping,
+										   cfg.restitution, cfg.friction, CATEGORY_WEAPON, 0, cfg.density );
+
+			b2Vec2 localAttach;
+
+			// Pour l'arc : point d'attache personnalisé. Pour tous les autres : bas-gauche du sprite.
+			if ( strcmp( cfg.name, "BOW" ) == 0 )
+				localAttach = ComputeWeaponAttachPointCustom( weaponArt, cfg.pixelSize, cfg.attachPixelX, cfg.attachPixelY );
+			else
+				localAttach = ComputeWeaponAttachPoint( weaponArt, cfg.pixelSize );
+
+			// 3. Joint au centre du personnage
+			b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
+			jointDef.base.bodyIdA = characterBody;
+			jointDef.base.bodyIdB = weaponBody;
+			jointDef.base.localFrameA.p = { 0.0f, 0.0f }; // Centre du cercle joueur
+			jointDef.base.localFrameB.p = localAttach;
+			jointDef.enableMotor = cfg.enableMotor;
+			jointDef.motorSpeed = cfg.motorSpeed;
+			jointDef.maxMotorTorque = cfg.maxMotorTorque;
+			jointDef.enableLimit = cfg.enableLimit;
+			jointDef.lowerAngle = cfg.lowerAngle;
+			jointDef.upperAngle = cfg.upperAngle;
+
+			b2JointId jointId = b2CreateRevoluteJoint( m_worldId, &jointDef );
+
+			m_duos.push_back( { characterBody, weaponBody, jointId } );
+		}
+	}
+};
+
+
+static int WeaponsVS = RegisterSample( "Pixel Art", "WeaponsVS", WeaponsVS::Create );
 
 class SensorPerfTest : public Sample
 {

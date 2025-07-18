@@ -524,7 +524,7 @@ public:
 		float fontSize = ImGui::GetFontSize();
 		float height = 8.0f * fontSize;
 		ImGui::SetNextWindowPos( { 0.5f * fontSize, m_camera->m_height - height - 2.0f * fontSize }, ImGuiCond_Once );
-		ImGui::SetNextWindowSize( { 8.0f * fontSize, height } );
+		ImGui::SetNextWindowSize( { 32.0f * fontSize, 500.0f } );
 
 		ImGui::Begin( "Revolute Joint", nullptr, ImGuiWindowFlags_NoResize );
 

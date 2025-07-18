@@ -77,7 +77,7 @@ float sdConvexPolygon(in vec2 p, in vec2[8] v, in int count)
 void main()
 {
     vec4 borderColor = f_color;
-    vec4 fillColor = 0.6f * borderColor;
+    vec4 fillColor = 0.99f * borderColor;
 
     float dw = sdConvexPolygon(f_position, f_points, f_count);
     float d = abs(dw - f_radius);

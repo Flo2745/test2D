@@ -1,232 +1,309 @@
-#include "audiomanager.h"
-#include "benchmarks.h"
-#include "draw.h"
-#include "human.h"
-#include "particules.h"
-#include "random.h"
-#include "sample.h"
+ï»¿#include "pixel_art.h"
 
-#include "box2d/box2d.h"
-#include "box2d/id.h"
-#include "box2d/math_functions.h"
-
-#include <GLFW/glfw3.h>
-#include <SFML/Audio.hpp>
-#include <algorithm>
-#include <array>
-#include <filesystem>
-#include <imgui.h>
-#include <queue>
-#include <random>
-#include <set>
+#include <cassert>
+#include <map>
+#include <string>
 #include <vector>
 
-constexpr float b2_pi = 3.14159265359f;
-
-inline bool operator<( b2BodyId a, b2BodyId b )
+namespace
 {
-	uint64_t ua = b2StoreBodyId( a );
-	uint64_t ub = b2StoreBodyId( b );
-	return ua < ub;
+std::vector<std::string> _pixelArtColorNames;
+std::map<std::string, PixelArtColor> _pixelArtColors;
+} // namespace
+
+// ========== Gestion des motifs couleur ==========
+
+void PixelArtColor_Register( const std::string& name, int w, int h, const uint32_t* data )
+{
+	assert( w > 0 && h > 0 && data );
+	PixelArtColor grid( w, h );
+	for ( int i = 0; i < w * h; ++i )
+		grid.pixels[i] = data[i];
+	_pixelArtColorNames.push_back( name );
+	_pixelArtColors[name] = std::move( grid );
 }
 
-class ZeldaRupee : public Sample
+const PixelArtColor* PixelArtColor_GetByName( const std::string& name )
 {
-public:
-	static Sample* Create( SampleContext* context )
-	{
-		return new ZeldaRupee( context );
-	}
+	auto it = _pixelArtColors.find( name );
+	if ( it != _pixelArtColors.end() )
+		return &it->second;
+	return nullptr;
+}
 
-	explicit ZeldaRupee( SampleContext* context )
-		: Sample( context )
-	{
-		// Désactiver la gravité pour observer le rupee en lévitation
-		b2World_SetGravity( m_worldId, { 0.0f, 0.0f } );
-
-		if ( !m_context->restart )
-		{
-			m_context->camera.m_center = { 0.0f, 0.0f };
-			m_context->camera.m_zoom = 10.0f;
-		}
-
-		// Créer le rupee avec des couleurs personnalisées
-		CreateRupeeShapeProperlyJoined();
-	}
-
-private:
-	// Fonction pour calculer l'intersection de deux segments
-	static b2Vec2 IntersectSegments( const b2Vec2& A1, const b2Vec2& A2, const b2Vec2& B1, const b2Vec2& B2 )
-	{
-		float x1 = A1.x, y1 = A1.y;
-		float x2 = A2.x, y2 = A2.y;
-		float x3 = B1.x, y3 = B1.y;
-		float x4 = B2.x, y4 = B2.y;
-
-		float denom = ( y4 - y3 ) * ( x2 - x1 ) - ( x4 - x3 ) * ( y2 - y1 );
-		if ( fabsf( denom ) < 1e-8f )
-		{
-			return A1;
-		}
-
-		float t = ( ( x4 - x3 ) * ( y1 - y3 ) - ( y4 - y3 ) * ( x1 - x3 ) ) / denom;
-		float ix = x1 + t * ( x2 - x1 );
-		float iy = y1 + t * ( y2 - y1 );
-
-		return { ix, iy };
-	}
-
-	// Fonction pour calculer un polygone décalé
-	static void ComputeOffsetPolygon( const b2Vec2* p, int n, float offsetOut, b2Vec2* out )
-	{
-		std::vector<b2Vec2> offsetLineStart( n );
-		std::vector<b2Vec2> offsetLineEnd( n );
-
-		for ( int i = 0; i < n; i++ )
-		{
-			int j = ( i + 1 ) % n;
-			b2Vec2 edge = { p[j].x - p[i].x, p[j].y - p[i].y };
-
-			b2Vec2 normal = { -edge.y, edge.x };
-			float length = b2Length( normal );
-			if ( length > 1e-8f )
-			{
-				float invLen = offsetOut / length;
-				normal = { normal.x * invLen, normal.y * invLen };
-			}
-
-			offsetLineStart[i] = { p[i].x + normal.x, p[i].y + normal.y };
-			offsetLineEnd[i] = { p[j].x + normal.x, p[j].y + normal.y };
-		}
-
-		for ( int i = 0; i < n; i++ )
-		{
-			int im1 = ( i + n - 1 ) % n;
-			out[i] = IntersectSegments( offsetLineStart[im1], offsetLineEnd[im1], offsetLineStart[i], offsetLineEnd[i] );
-		}
-	}
-
-	// Fonction pour créer le rupee avec des couleurs personnalisées
-	void CreateRupeeShapeProperlyJoined()
-	{
-		b2BodyDef bd = b2DefaultBodyDef();
-		bd.type = b2_dynamicBody;
-		bd.position = { 0.0f, 0.0f };
-		bd.angularDamping = 0.2f;
-		b2BodyId bodyId = b2CreateBody( m_worldId, &bd );
-
-		b2Vec2 rupee[6] = { { 0.0f, 1.4f }, { 0.7f, 0.7f }, { 0.7f, -0.7f }, { 0.0f, -1.4f }, { -0.7f, -0.7f }, { -0.7f, 0.7f } };
-
-		// Définir la couleur pour le polygone central
-		b2SurfaceMaterial centerMaterial = b2DefaultSurfaceMaterial();
-		centerMaterial.friction = 0.3f;
-		centerMaterial.restitution = 0.1f;
-		centerMaterial.customColor = b2_colorDarkSeaGreen;
-
-		b2ShapeDef centerSd = b2DefaultShapeDef();
-		centerSd.density = 1.0f;
-		centerSd.material = centerMaterial;
-
-		b2Hull coreHull = b2ComputeHull( rupee, 6 );
-		if ( coreHull.count > 2 )
-		{
-			b2Polygon corePolygon = b2MakePolygon( &coreHull, 0.0f );
-			b2CreatePolygonShape( bodyId, &centerSd, &corePolygon );
-		}
-
-		float offsetDist = 0.4f;
-		b2Vec2 offsetPoly[6];
-		ComputeOffsetPolygon( rupee, 6, offsetDist, offsetPoly );
-
-		// Définir la couleur pour les facettes
-		b2SurfaceMaterial facetMaterial = b2DefaultSurfaceMaterial();
-		facetMaterial.friction = 0.3f;
-		facetMaterial.restitution = 0.1f;
-		facetMaterial.customColor = b2_colorLightSteelBlue;
-
-		b2ShapeDef facetSd = b2DefaultShapeDef();
-		facetSd.material = facetMaterial;
-
-		for ( int i = 0; i < 6; i++ )
-		{
-			int j = ( i + 1 ) % 6;
-			b2Vec2 quad[4] = { rupee[i], rupee[j], offsetPoly[j], offsetPoly[i] };
-
-			b2Hull facetHull = b2ComputeHull( quad, 4 );
-			if ( facetHull.count >= 3 )
-			{
-				b2Polygon facetPolygon = b2MakePolygon( &facetHull, 0.0f );
-				b2CreatePolygonShape( bodyId, &facetSd, &facetPolygon );
-			}
-		}
-	}
-};
-static int ZeldaRupee = RegisterSample( "Pixel Art", "ZELDA Rupee", ZeldaRupee::Create );
-
-class PixelArtHelloSample : public Sample
+std::vector<std::string> PixelArtColor_GetAllNames()
 {
-public:
-	static Sample* Create( SampleContext* context )
-	{
-		return new PixelArtHelloSample( context );
-	}
+	return _pixelArtColorNames;
+}
 
-	explicit PixelArtHelloSample( SampleContext* context )
-		: Sample( context )
-	{
-		b2World_SetGravity( m_worldId, { 0.0f, 0.0f } ); // ou 0 pour tester en lévitation
+const PixelArtColor* PixelArtColor_GetByIndex( size_t idx )
+{
+	if ( idx < _pixelArtColorNames.size() )
+		return PixelArtColor_GetByName( _pixelArtColorNames[idx] );
+	return nullptr;
+}
 
-		if ( !m_context->restart )
+// ========== CrÃ©ation du body et des fixtures couleur ==========
+
+b2BodyId CreatePixelArtBody( b2WorldId worldId, const PixelArtColor& art, float pixelSize, b2Vec2 origin, float linearDamping,
+							 float angularDamping, float restitution, float friction )
+{
+	b2BodyDef bd = b2DefaultBodyDef();
+	bd.type = b2_dynamicBody;
+	bd.position = origin;
+	bd.linearDamping = linearDamping;
+	bd.angularDamping = angularDamping;
+	b2BodyId bodyId = b2CreateBody( worldId, &bd );
+
+	const float startX = -( art.width * pixelSize ) * 0.5f + pixelSize * 0.5f;
+	const float startY = ( art.height - 1 ) * pixelSize * 0.5f;
+
+	for ( int y = 0; y < art.height; ++y )
+	{
+		for ( int x = 0; x < art.width; ++x )
 		{
-			m_context->camera.m_center = { 0.0f, 0.0f };
-			m_context->camera.m_zoom = 18.0f;
-		}
-
-		CreatePixelArtHELLO();
-	}
-
-private:
-	static constexpr int gridHeight = 5;
-	static constexpr int gridWidth = 29; // 5x5 lettres + espaces
-	static constexpr bool HELLO[gridHeight][gridWidth] = {
-		// H     E     L     L     O
-		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1 },
-		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
-		{ 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
-		{ 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1 },
-		{ 1, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1 } };
-
-	void CreatePixelArtHELLO()
-	{
-		const float pixelSize = 1.0f;
-		const float startX = -( gridWidth * pixelSize ) * 0.5f + pixelSize * 0.5f;
-		const float startY = +4.0f; // Ajuste pour centrer ou surélever
-
-		for ( int y = 0; y < gridHeight; ++y )
-		{
-			for ( int x = 0; x < gridWidth; ++x )
-			{
-				if ( !HELLO[y][x] )
-					continue;
-
-				b2BodyDef bd = b2DefaultBodyDef();
-				bd.type = b2_dynamicBody;
-				bd.position = { startX + x * pixelSize, startY - y * pixelSize };
-				bd.linearDamping = 2.0f;
-				bd.angularDamping = 2.0f;
-				b2BodyId bodyId = b2CreateBody( m_worldId, &bd );
-
-				b2ShapeDef sd = b2DefaultShapeDef();
-				sd.material = b2DefaultSurfaceMaterial();
-				sd.material.restitution = 0.1f;
-				sd.material.friction = 0.6f;
-				sd.material.customColor = 0xFFD700; // jaune/or
-
-				b2Polygon box = b2MakeBox( pixelSize * 0.5f, pixelSize * 0.5f );
-				b2CreatePolygonShape( bodyId, &sd, &box );
-			}
+			uint32_t color = art.at( x, y );
+			if ( color == 0 )
+				continue;
+			b2ShapeDef sd = b2DefaultShapeDef();
+			sd.material = b2DefaultSurfaceMaterial();
+			sd.density = 1.0f;
+			sd.material.restitution = restitution;
+			sd.material.friction = friction;
+			sd.material.customColor = color;
+			sd.isSensor = true;
+			float px = startX + x * pixelSize;
+			float py = startY - y * pixelSize;
+			b2Polygon box = b2MakeOffsetBox( pixelSize * 0.5f, pixelSize * 0.5f, { px, py }, b2MakeRot( 0 ) );
+			b2CreatePolygonShape( bodyId, &sd, &box );
 		}
 	}
+	return bodyId;
+}
+
+// ========== Conversion indices + palette -> PixelArtColor ==========
+
+void MakePixelArtColorFromPalette( int w, int h, const uint8_t* indices, const uint32_t* palette, size_t paletteSize,
+								   PixelArtColor& out )
+{
+	out.width = w;
+	out.height = h;
+	out.pixels.resize( w * h, 0 );
+	for ( int i = 0; i < w * h; ++i )
+		out.pixels[i] = ( indices[i] < paletteSize ) ? palette[indices[i]] : 0;
+}
+
+// ========== Palettes ==========
+
+constexpr uint32_t weapon_palette[] = {
+	0x00000000, // 0 (transparent, facultatif mais classique)
+	0x281E0B,	// 1
+	0x684E1E,	// 2
+	0x493615,	// 3
+	0x896727,	// 4
+	0x082520,	// 5
+	0x1E8A77,	// 6
+	0x27B29A,	// 7
+	0x2BC7AC,	// 8
+	0x33EBCB,	// 9
+	0x686868,	// 10
+	0x6B6B6B,	// 11
+	0x979797,	// 12
+	0xCCCCCC,	// 13
+	0xD72525,	// 14
+	0x2B334C,	// 15
+	0x2B334C,	// 16 (note: mÃªme couleur que 15)
+	0x10131F	// 17
 };
 
-static int pixelArtHelloSample = RegisterSample( "Pixel Art", "HELLO (pixel box2D)", PixelArtHelloSample::Create );
+// Palette cÅ“ur
+constexpr uint32_t heart_palette[] = { 0x00000000, 0xFF0000, 0xFF80C0, 0xFFFFFF };
+
+// ========== Sprite indices 16x16 Ã©pÃ©e ==========
+
+static const uint8_t sword_indices_16x16[16 * 16] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 7, 5, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 5, 9, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5,
+	9, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 7, 9, 5, 0, 0, 0, 0, 0, 5, 5, 0, 0, 0, 5, 9, 7, 9, 5, 0, 0, 0,
+	0, 0, 0, 5, 6, 5, 0, 5, 9, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 5, 7, 5, 9, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5,
+	7, 5, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 7, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 5, 7, 7, 5,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 5, 5, 6, 5, 0, 0, 0, 0, 0, 0, 5, 5, 2, 1, 0, 0, 0, 0, 5, 5, 0, 0, 0, 0,
+	0, 0, 5, 6, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+// ========== Sprite indices 16x16 trident ==========
+
+static const uint8_t trident_indices_16x16[16 * 16] = {
+	0, 0, 0, 0, 0, 0, 0, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 0, 0, 0, 0, 0, 0, 0, 0,	 0,	 11, 13, 0,	 0,	 0,	 0,	 0,
+	0, 0, 0, 0, 0, 0, 0, 0,	 11, 13, 12, 0,	 12, 13, 0,	 0, 0, 0, 0, 0, 0, 0, 0, 11, 13, 12, 0,	 12, 13, 11, 0,	 0,
+	0, 0, 0, 0, 0, 0, 0, 11, 12, 0,	 12, 13, 11, 0,	 0,	 0, 0, 0, 0, 0, 0, 0, 0, 10, 6,	 12, 13, 11, 0,	 12, 13, 0,
+	0, 0, 0, 0, 0, 0, 0, 6,	 8,	 6,	 11, 0,	 12, 13, 10, 0, 0, 0, 0, 0, 0, 0, 0, 6,	 7,	 7,	 6,	 12, 13, 10, 0,	 0,
+	0, 0, 0, 0, 0, 0, 5, 7,	 5,	 5,	 10, 10, 10, 0,	 0,	 0, 0, 0, 0, 0, 0, 6, 7, 5,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,
+	0, 0, 0, 0, 6, 8, 5, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 0, 0, 0, 6, 8, 5, 0, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,
+	0, 0, 6, 8, 5, 0, 0, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 0, 6, 8, 5, 0, 0, 0, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,
+	6, 7, 5, 0, 0, 0, 0, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 5, 5, 0, 0, 0, 0, 0, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0 };
+
+
+// ========== Sprite indices 16x16 arc ==========
+
+static const uint8_t bow_indices_16x16[16 * 16] = {
+	0, 0, 0, 0,	 0,	 0, 0,	0, 0, 0, 0, 0,	0,	0,	0, 0, 0, 0, 0,	0,	0, 0, 0, 0, 0, 0, 0,  3,  3,  3, 3, 0, 0, 0,  0,  0, 0,
+	0, 0, 0, 3,	 3,	 3, 4,	2, 2, 4, 1, 0,	0,	0,	0, 0, 0, 3, 3,	4,	2, 4, 1, 1, 1, 1, 0,  0,  0,  0, 0, 0, 3, 11, 2,  1, 1,
+	1, 0, 0, 10, 0,	 0, 0,	0, 0, 0, 3, 11, 12, 11, 0, 0, 0, 0, 10, 0,	0, 0, 0, 0, 0, 3, 11, 12, 11, 0, 0, 0, 0, 10, 0,  0, 0,
+	0, 0, 0, 0,	 3,	 2, 11, 0, 0, 0, 0, 10, 0,	0,	0, 0, 0, 0, 0,	3,	4, 1, 0, 0, 0, 0, 10, 0,  0,  0, 0, 0, 0, 0,  0,  3, 2,
+	1, 0, 0, 0,	 10, 0, 0,	0, 0, 0, 0, 0,	0,	0,	3, 4, 1, 0, 0,	10, 0, 0, 0, 0, 0, 0, 0,  0,  0,  3, 4, 1, 0, 0,  10, 0, 0,
+	0, 0, 0, 0,	 0,	 0, 0,	0, 3, 2, 1, 0,	10, 0,	0, 0, 0, 0, 0,	0,	0, 0, 0, 0, 3, 2, 1,  10, 0,  0, 0, 0, 0, 0,  0,  0, 0,
+	0, 0, 0, 3,	 4,	 1, 0,	0, 0, 0, 0, 0,	0,	0,	0, 0, 0, 0, 0,	0,	1, 0, 0, 0, 0, 0, 0,  0,  0,  0, 0, 0, 0, 0 };
+
+static const uint8_t bow_arrow_indices_16x16[16 * 16] = {
+	0, 0, 0, 0,	 0,	 0,	 0,	 0, 0, 0, 0,  0, 0,	 0,	 0,	 0, 0, 0, 0, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 3, 3, 3,  3,  0,
+	0, 0, 0, 13, 0,	 0,	 0,	 0, 3, 3, 3,  4, 2,	 2,	 4,	 1, 0, 0, 0, 11, 12, 0,	 3,	 3,	 4,	 2,	 4, 1, 1, 1,  1,  0,
+	0, 0, 0, 0,	 1,	 4,	 11, 2, 1, 1, 1,  0, 0,	 0,	 10, 0, 0, 0, 0, 0,	 3,	 1,	 4,	 11, 0,	 0,	 0, 0, 0, 0,  10, 0,
+	0, 0, 0, 3,	 11, 12, 1,	 4, 0, 0, 0,  0, 0,	 10, 0,	 0, 0, 0, 0, 3,	 2,	 11, 0,	 1,	 4,	 0,	 0, 0, 0, 10, 0,  0,
+	0, 0, 3, 4,	 1,	 0,	 0,	 0, 1, 4, 0,  0, 0,	 10, 0,	 0, 0, 0, 3, 2,	 1,	 0,	 0,	 0,	 0,	 1,	 4, 0, 0, 10, 0,  0,
+	0, 0, 3, 4,	 1,	 0,	 0,	 0, 0, 0, 1,  4, 10, 0,	 0,	 0, 0, 3, 4, 1,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 1, 0, 0,  0,  0,
+	0, 3, 2, 1,	 0,	 0,	 0,	 0, 0, 0, 10, 0, 0,	 0,	 0,	 0, 0, 3, 2, 1,	 0,	 0,	 10, 10, 10, 10, 0, 0, 0, 0,  0,  0,
+	0, 3, 4, 1,	 10, 10, 0,	 0, 0, 0, 0,  0, 0,	 0,	 0,	 0, 0, 0, 1, 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 0, 0, 0,  0,  0 };
+
+static const uint8_t arrow_indices_16x16[16 * 16] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0,	0,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0,	0,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0,	0,	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 12, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0, 0,	0, 0, 0, 0, 0, 0,
+	0, 4, 1, 0, 0, 0, 0, 0, 0,	0,	0, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	4, 1, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0,	4,	1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0,	0, 0, 0, 0, 0, 0,
+	0, 0, 4, 1, 0, 0, 0, 0, 0,	0,	0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	0, 0, 0 };
+
+// ========== Sprite indices 16x16 dagger ==========
+
+static const uint8_t dagger_indices_16x16[16 * 16] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 5, 9, 7, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5,
+	0, 9, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 7, 5, 7, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 7, 5, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 5, 7, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 4, 1, 0, 5, 5, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 5, 6, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+static const uint8_t axe_indices_16x16[16 * 16] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 5, 9, 7, 8, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 7, 7, 7, 3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 8, 7,
+	6, 7, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 3, 7, 6, 7, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1, 7, 7, 5, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+
+// ========== Sprite indices heart 8x8 (motif exemple) ==========
+
+static const uint8_t heart_indices_8x8[8 * 8] = { 0, 1, 1, 0, 0, 1, 1, 0, 1, 2, 1, 1, 1, 1, 2, 1, 1, 1, 1, 2, 1, 1,
+												  2, 1, 1, 1, 1, 1, 1, 2, 2, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1,
+												  1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+static const uint8_t spear_indices_16x16[16 * 16] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 9, 9, 5, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 5, 8, 9, 9, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 8, 7, 8, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	3, 4, 8, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 3, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+static const uint8_t crossbowfirework_indices_16x16[16 * 16] = {
+	0, 0, 0, 2,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 0, 0, 0, 3, 2,	3,	2,	2,	2,	0,	0,	0,	0,	0,	0,	0, 0,
+	0, 0, 3, 2,	 4,	 4,	 4,	 4,	 2,	 2,	 0,	 14, 14, 0,	 0, 0, 0, 0, 0, 10, 0,	0,	3,	3,	4,	4,	11, 13, 14, 14, 0, 0,
+	0, 0, 0, 10, 0,	 0,	 0,	 0,	 1,	 14, 14, 13, 13, 14, 0, 0, 0, 0, 0, 10, 0,	0,	0,	1,	3,	17, 14, 14, 11, 0,	0, 0,
+	0, 0, 0, 10, 0,	 0,	 1,	 3,	 17, 16, 17, 14, 4,	 2,	 0, 0, 0, 0, 0, 10, 0,	1,	3,	17, 16, 17, 3,	1,	4,	2,	0, 0,
+	0, 0, 0, 10, 1,	 3,	 17, 16, 17, 3,	 1,	 0,	 3,	 4,	 2, 0, 0, 0, 0, 10, 3,	17, 16, 17, 3,	1,	0,	0,	3,	4,	2, 0,
+	0, 0, 0, 10, 17, 16, 17, 3,	 1,	 0,	 0,	 0,	 0,	 4,	 2, 0, 0, 0, 1, 10, 16, 17, 3,	1,	0,	0,	0,	0,	0,	4,	3, 0,
+	0, 1, 3, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 2,	 2, 2, 1, 4, 2, 3,	1,	0,	0,	0,	0,	0,	0,	0,	0,	3,	3, 0,
+	1, 1, 4, 1,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0,	 0, 0, 0, 1, 1, 0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0, 0 };
+
+static const uint8_t crossbow_indices_16x16[16 * 16] = {
+	0, 0, 0,  2,  0, 0,	 0,	 0,	 0,	 0, 0, 0,  0, 0, 0,	 0, 0, 0, 3,  2,  3, 2,	 2,	 2, 0,	0,	0, 0, 0,  0, 0, 0,	0, 0, 3, 2, 4,
+	4, 4, 4,  2,  2, 0,	 11, 11, 0,	 0, 0, 0,  0, 0, 10, 0, 0, 3, 3,  4,  4, 11, 0,	 0, 11, 0,	0, 0, 0,  0, 0, 10, 0, 0, 0, 1, 2,
+	4, 3, 0,  11, 0, 0,	 0,	 0,	 0,	 0, 0, 10, 0, 1, 3,	 2, 2, 4, 11, 0,  0, 0,	 0,	 0, 0,	0,	0, 0, 10, 3, 3, 3,	2, 2, 4, 2, 0,
+	0, 0, 0,  0,  0, 0,	 1,	 3,	 10, 2, 3, 3,  1, 4, 2,	 0, 0, 0, 0,  0,  0, 1,	 3,	 4, 2,	10, 3, 1, 0,  3, 4, 2,	0, 0, 0, 0, 1,
+	3, 4, 2,  4,  3, 10, 0,	 0,	 3,	 4, 2, 0,  0, 0, 0,	 3, 4, 2, 4,  3,  1, 0,	 10, 0, 0,	4,	2, 0, 0,  0, 1, 4,	2, 4, 3, 1, 0,
+	0, 0, 10, 0,  4, 3,	 0,	 0,	 1,	 3, 2, 4,  3, 1, 0,	 0, 0, 0, 0,  10, 2, 2,	 2,	 1, 4,	2,	3, 1, 0,  0, 0, 0,	0, 0, 0, 0, 3,
+	3, 0, 1,  1,  4, 1,	 0,	 0,	 0,	 0, 0, 0,  0, 0, 0,	 0, 0, 0, 0,  1,  1, 0,	 0,	 0, 0,	0,	0, 0, 0,  0, 0, 0,	0, 0 };
+
+static const uint8_t firework_indices_16x16[16 * 16] = {
+	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 0, 0, 0, 0, 0,
+	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 0, 0, 0, 0, 0,
+	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 0, 0, 0, 0, 0,
+	0,	0,	0,	0,	0,	0,	0,	14, 14, 0,	0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  11, 13, 14, 14, 0, 0, 0, 0, 0, 0,
+	0,	0,	0,	0,	0,	14, 14, 13, 13, 14, 0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  17, 14, 14, 11, 0,  0, 0, 0, 0, 0, 0,
+	0,	0,	0,	0,	17, 16, 17, 14, 0,	0,	0, 0, 0, 0, 0, 0, 0,  0,  0,  17, 16, 17, 0,  0,  0,  0,  0, 0, 0, 0, 0, 0,
+	0,	0,	17, 16, 17, 0,	0,	0,	0,	0,	0, 0, 0, 0, 0, 0, 0,  17, 16, 17, 0,  0,  0,  0,  0,  0,  0, 0, 0, 0, 0, 0,
+	17, 16, 17, 0,	0,	0,	0,	0,	0,	0,	0, 0, 0, 0, 0, 0, 16, 17, 0,  0,  0,  0,  0,  0,  0,  0,  0, 0, 0, 0, 0, 0 };
+
+// ===== Enregistrement dynamique =====
+struct PixelArtColorRegisterer
+{
+	PixelArtColorRegisterer()
+	{
+		PixelArtColor swordDiamond;
+		MakePixelArtColorFromPalette( 16, 16, sword_indices_16x16, weapon_palette, sizeof( weapon_palette ) / sizeof( uint32_t ),
+									  swordDiamond );
+		PixelArtColor_Register( "DIAMOND_SWORD", 16, 16, swordDiamond.pixels.data() );
+
+		PixelArtColor axeDiamond;
+		MakePixelArtColorFromPalette( 16, 16, axe_indices_16x16, weapon_palette, sizeof( weapon_palette ) / sizeof( uint32_t ),
+									  axeDiamond );
+		PixelArtColor_Register( "DIAMOND_AXE", 16, 16, axeDiamond.pixels.data() );
+
+		PixelArtColor daggerDiamond;
+		MakePixelArtColorFromPalette( 16, 16, dagger_indices_16x16, weapon_palette, sizeof( weapon_palette ) / sizeof( uint32_t ),
+									  daggerDiamond );
+		PixelArtColor_Register( "DIAMOND_DAGGER", 16, 16, daggerDiamond.pixels.data() );
+
+		PixelArtColor bow;
+		MakePixelArtColorFromPalette( 16, 16, bow_indices_16x16, weapon_palette, sizeof( weapon_palette ) / sizeof( uint32_t ),
+									  bow );
+		PixelArtColor_Register( "BOW", 16, 16, bow.pixels.data() );
+
+		PixelArtColor bowArrow;
+		MakePixelArtColorFromPalette( 16, 16, bow_arrow_indices_16x16, weapon_palette,
+									  sizeof( weapon_palette ) / sizeof( uint32_t ), bowArrow );
+		PixelArtColor_Register( "BOW_ARROW", 16, 16, bowArrow.pixels.data() );
+
+		PixelArtColor arrow;
+		MakePixelArtColorFromPalette( 16, 16, arrow_indices_16x16, weapon_palette, sizeof( weapon_palette ) / sizeof( uint32_t ),
+									  arrow );
+		PixelArtColor_Register( "ARROW", 16, 16, arrow.pixels.data() );
+
+		PixelArtColor trident;
+		MakePixelArtColorFromPalette( 16, 16, trident_indices_16x16, weapon_palette,
+									  sizeof( weapon_palette ) / sizeof( uint32_t ), trident );
+		PixelArtColor_Register( "TRIDENT", 16, 16, trident.pixels.data() );
+
+
+		PixelArtColor heart;
+		MakePixelArtColorFromPalette( 8, 8, heart_indices_8x8, heart_palette, sizeof( heart_palette ) / sizeof( uint32_t ),
+									  heart );
+		PixelArtColor_Register( "HEART", 8, 8, heart.pixels.data() );
+
+		PixelArtColor spearDiamond;
+		MakePixelArtColorFromPalette( 16, 16, spear_indices_16x16, weapon_palette, sizeof( weapon_palette ) / sizeof( uint32_t ),
+									  spearDiamond );
+		PixelArtColor_Register( "DIAMOND_SPEAR", 16, 16, spearDiamond.pixels.data() );
+
+		PixelArtColor crossbowFirework;
+		MakePixelArtColorFromPalette( 16, 16, crossbowfirework_indices_16x16, weapon_palette,
+									  sizeof( weapon_palette ) / sizeof( uint32_t ), crossbowFirework );
+		PixelArtColor_Register( "CROSSBOWFIREWORK", 16, 16, crossbowFirework.pixels.data() );
+
+		PixelArtColor crossbow;
+		MakePixelArtColorFromPalette( 16, 16, crossbow_indices_16x16, weapon_palette,
+									  sizeof( weapon_palette ) / sizeof( uint32_t ), crossbow );
+		PixelArtColor_Register( "CROSSBOW", 16, 16, crossbow.pixels.data() );
+
+		PixelArtColor firework;
+		MakePixelArtColorFromPalette( 16, 16, firework_indices_16x16, weapon_palette,
+									  sizeof( weapon_palette ) / sizeof( uint32_t ), firework );
+		PixelArtColor_Register( "FIREWORK", 16, 16, firework.pixels.data() );
+
+	}
+};
+static PixelArtColorRegisterer _autoColorRegister;
